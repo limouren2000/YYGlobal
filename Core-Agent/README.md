@@ -63,6 +63,29 @@ python -m unittest Core-Agent/test_agent_trace_validator.py -v
 The command exits with `0` for a valid trace, `1` for validation findings, and
 `2` when the input cannot be read.
 
+## Agent run budget audit
+
+`agent_run_budget_auditor.py` checks the real JSON shape returned by
+`GET /api/agent-runs/{run_id}/trace`. It verifies that both planned and
+persisted steps stay within the Agent step budget, counts every tool-call record
+against the call budget, checks per-call timeouts, and reports malformed
+durations or duplicate step positions. It uses only the Python standard library.
+
+```bash
+curl -o trace.json http://localhost:8000/api/agent-runs/RUN_ID/trace
+python Core-Agent/agent_run_budget_auditor.py trace.json
+python Core-Agent/agent_run_budget_auditor.py trace.json \
+  --max-steps 8 \
+  --max-tool-calls 12 \
+  --tool-timeout-seconds 30 \
+  --json
+python -m unittest Core-Agent/test_agent_run_budget_auditor.py -v
+```
+
+The defaults match YYGlobal's current Agent settings. Exit codes are `0` when
+the run is within budget, `1` for budget or trace-integrity findings, and `2`
+when the input cannot be read or parsed.
+
 ## Official evidence bundle audit
 
 `evidence_bundle_auditor.py` checks an exported program-research evidence
