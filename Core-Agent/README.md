@@ -151,6 +151,9 @@ python Core-Agent/check_pr_scope.py --base upstream/main
 如果本地没有名为 `upstream` 的远端，可以省略 `--base`；脚本会依次尝试
 `upstream/main`、`origin/main` 和 `main`。
 
+面向 Core-Agent 的 PR 建议在提交前先运行这个范围检查，避免把根目录、
+Web 应用或 API 服务中的无关改动一起带入评审。
+
 运行单元测试：
 
 ```bash
