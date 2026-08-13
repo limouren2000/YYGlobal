@@ -102,6 +102,43 @@ The framework-independent JSONL format supports `tool_requested`,
 when the approval chain is safe, `1` for audit findings, and `2` when the file
 cannot be read.
 
+## Guardrail coverage audit
+
+`guardrail_coverage_auditor.py` cross-references two independently maintained
+approval layers: the global `ToolSpec.approval_required` flag in
+`services/api/app/agent/tools.py`, and each Skill's own `approval_required`
+list in `tool-policy.yaml`. Because these live in different files, a
+data-mutating tool (`mutates_data=True`) can drift out of sync and become
+reachable by a Skill without any human-approval gate on either layer. The
+auditor parses both sources with `ast` / `yaml`, without importing the
+FastAPI application, and reports every Skill/tool pair with this gap.
+
+```bash
+python Core-Agent/guardrail_coverage_auditor.py
+python Core-Agent/guardrail_coverage_auditor.py --json
+python -m unittest Core-Agent/test_guardrail_coverage_auditor.py -v
+```
+
+Running it against the current repository surfaces real, pre-existing gaps:
+`extract_program_requirements` and `verify_program_official` both mutate data
+but are not listed in the `approval_required` section of every Skill that can
+call them (`program-research`, `application-timeline`, `program-compare`,
+`shortlist-builder`). Maintainers can either add these tools to the relevant
+Skill's `approval_required` list, set `approval_required=True` on the
+`ToolSpec`, or record an intentional exception:
+
+```bash
+python Core-Agent/guardrail_coverage_auditor.py \
+  --allow program-research:verify_program_official \
+  --allow application-timeline:extract_program_requirements
+```
+
+Repeatable exemptions can also be kept in a text file (one `skill:tool` or
+bare `tool` per line, `#` starts a comment) and passed with
+`--allowlist-file`. The command exits with `0` when every mutating tool is
+gated, `1` when gaps are found, and `2` when the repository cannot be
+inspected.
+
 ## 提交前检查
 
 本目录提供一个仅依赖 Python 标准库的范围检查器，用于确认当前分支、暂存区、
