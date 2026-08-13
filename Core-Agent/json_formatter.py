@@ -4,6 +4,7 @@ Examples:
     python Core-Agent/json_formatter.py data.json
     type data.json | python Core-Agent/json_formatter.py --sort-keys
     python Core-Agent/json_formatter.py data.json --output formatted.json
+
 """
 
 from __future__ import annotations

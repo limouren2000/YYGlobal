@@ -46,6 +46,18 @@ python -m unittest Core-Agent/test_agent_trace_validator.py -v
 
 命令以 `0` 退出表示 trace 有效，`1` 表示存在校验问题，`2` 表示无法读取输入。
 
+## 高风险工具审批审计
+
+`approval_trace_auditor.py` 用于检查写操作和不可逆 Agent 工具调用是否在执行前获得了匹配的人工审批。它也会发现拒绝后执行、事后审批、重复 ID，以及对未知调用的引用。
+
+```bash
+python Core-Agent/approval_trace_auditor.py approval-trace.jsonl
+python Core-Agent/approval_trace_auditor.py approval-trace.jsonl --json
+python -m unittest Core-Agent/test_approval_trace_auditor.py -v
+```
+
+这个与框架无关的 JSONL 格式支持 `tool_requested`、`approval_decision` 和 `tool_executed` 事件。审批链安全时命令以 `0` 退出，发现审计问题时以 `1` 退出，文件无法读取时以 `2` 退出。
+
 ## 提交前检查
 
 本目录提供一个仅依赖 Python 标准库的范围检查器，用于确认当前分支、暂存区、工作区和未跟踪文件中的所有改动都位于 `Core-Agent/` 下：

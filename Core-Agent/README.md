@@ -85,6 +85,23 @@ Warnings such as stale sources do not fail the audit. Contract errors or
 missing verified evidence exit with `1`; unreadable or invalid JSON exits with
 `2`.
 
+## Risky tool approval audit
+
+`approval_trace_auditor.py` checks that write and irreversible Agent tool calls
+have a matching human approval before execution. It also catches execution
+after denial, late approvals, duplicate IDs, and references to unknown calls.
+
+```bash
+python Core-Agent/approval_trace_auditor.py approval-trace.jsonl
+python Core-Agent/approval_trace_auditor.py approval-trace.jsonl --json
+python -m unittest Core-Agent/test_approval_trace_auditor.py -v
+```
+
+The framework-independent JSONL format supports `tool_requested`,
+`approval_decision`, and `tool_executed` events. The command exits with `0`
+when the approval chain is safe, `1` for audit findings, and `2` when the file
+cannot be read.
+
 ## 提交前检查
 
 本目录提供一个仅依赖 Python 标准库的范围检查器，用于确认当前分支、暂存区、
