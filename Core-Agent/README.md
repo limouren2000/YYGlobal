@@ -138,3 +138,24 @@ python Core-Agent/material_checklist.py \
 ```
 
 Add `--json` when the result needs to be consumed by another tool.
+
+## Personal statement quality check
+
+`ps_quality_checker.py` turns the three acceptance criteria the `ps-planner`
+skill declares in its own prompt — stay on-topic, do not misuse the school
+name, and only cite traceable material — into deterministic checks. It flags
+leftover placeholders, word counts outside the configured limits, prompt
+requirements that appear unaddressed, cited experiences that are not among the
+confirmed set, and school names that differ from the target program.
+
+The input is a JSON bundle mirroring the `ps-planner` output plus the target
+program and the applicant's confirmed experiences:
+
+```bash
+python Core-Agent/ps_quality_checker.py ps-bundle.json
+python Core-Agent/ps_quality_checker.py ps-bundle.json --json
+python -m unittest Core-Agent/test_ps_quality_checker.py -v
+```
+
+The command exits with `0` when no errors are found, `1` when errors are found,
+and `2` when the input cannot be read or parsed. Warnings do not fail the check.
