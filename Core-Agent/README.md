@@ -175,3 +175,18 @@ python Core-Agent/material_checklist.py \
 ```
 
 Add `--json` when the result needs to be consumed by another tool.
+
+## Program code validation
+
+`program_code_validator.py` 校验留学申请场景中的项目编号格式，只使用 Python
+标准库。项目编号由字母、数字和连字符组成（如 `USC-MSCS`），末尾可携带入学
+学期后缀（如 `-2026FALL` / `-2027SPRING`），用于研究项目、创建选校清单等
+流程前的统一规范化。
+
+```bash
+python Core-Agent/program_code_validator.py "USC-MSCS-2026FALL"
+python Core-Agent/program_code_validator.py "us-mscs" --json
+```
+
+命令以 `0` 表示编号有效、`1` 表示无效。`--json` 输出结构化结果，包含规范化
+后的编号与识别出的入学学期，便于其他工具消费。
