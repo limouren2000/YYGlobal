@@ -63,6 +63,38 @@ python -m unittest Core-Agent/test_agent_trace_validator.py -v
 The command exits with `0` for a valid trace, `1` for validation findings, and
 `2` when the input cannot be read.
 
+## Agent handoff validation
+
+`agent_handoff_validator.py` validates a compact JSON handoff before one Agent
+passes work to another. It requires distinct sender and receiver names, a
+summary, at least one actionable next step, and lists for completed work,
+evidence, and risks. A blocked handoff must state its blocker in `risks`.
+
+```bash
+python Core-Agent/agent_handoff_validator.py handoff.json
+python Core-Agent/agent_handoff_validator.py handoff.json --json
+python -m unittest Core-Agent/test_agent_handoff_validator.py -v
+```
+
+Example:
+
+```json
+{
+  "handoff_id": "research-to-writer-001",
+  "from_agent": "research-agent",
+  "to_agent": "writing-agent",
+  "summary": "Official requirements have been verified.",
+  "completed": ["Checked the program deadline."],
+  "next_steps": ["Draft an application timeline."],
+  "evidence": ["https://example.edu/admissions"],
+  "risks": [],
+  "status": "ready"
+}
+```
+
+The command exits with `0` for a valid handoff, `1` for contract violations,
+and `2` for unreadable or invalid JSON.
+
 ## Official evidence bundle audit
 
 `evidence_bundle_auditor.py` checks an exported program-research evidence
