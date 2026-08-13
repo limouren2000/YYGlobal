@@ -1138,7 +1138,13 @@ async def chat_stream(
 
         async def execute() -> None:
             try:
-                await harness.run(session, payload.message, payload.conversation_id, emit)
+                await harness.run(
+                    session=session,
+                    message=payload.message,
+                    conversation_id=payload.conversation_id,
+                    emit=emit,
+                    approved_tools=payload.approved_tools,
+                )
             except Exception as exc:
                 await queue.put(("run.failed", {"error": str(exc)}))
             finally:

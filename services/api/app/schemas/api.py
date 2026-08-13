@@ -338,6 +338,7 @@ class TaskResponse(ORMModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=10000)
     conversation_id: Optional[str] = None
+    approved_tools: List[str] = Field(default_factory=list)
 
 
 class MemoryResponse(ORMModel):

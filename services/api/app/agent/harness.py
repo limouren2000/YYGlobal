@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,7 @@ class AgentHarness:
         message: str,
         conversation_id: Optional[str] = None,
         emit: EventCallback = no_op_event,
+        approved_tools: Optional[List[str]] = None,
     ) -> AgentRun:
         started = time.perf_counter()
         findings = check_user_input(message)
@@ -97,6 +98,7 @@ class AgentHarness:
                 skill=skill,
                 tools=tool_registry,
                 emit=emit,
+                approved_tools=approved_tools or [],
             )
             structured_output = parse_skill_output(skill, final_output)
             display_output = structured_output["summary"]

@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -433,6 +433,39 @@ class ToolRegistry:
     def allowed(self, names: List[str]) -> List[ToolSpec]:
         return [self.tools[name] for name in names if name in self.tools]
 
+    def resolve_access(
+        self,
+        names: List[str],
+        policy_approval_required: List[str],
+        approved_tools: List[str],
+    ) -> tuple[List[str], List[str]]:
+        """Return tools available now and tools withheld pending explicit approval."""
+        approved = set(approved_tools)
+        skill_tools = set(names)
+        invalid = sorted(approved - skill_tools)
+        if invalid:
+            raise PermissionError(
+                f"获批工具不属于当前 Skill：{', '.join(invalid)}"
+            )
+
+        protected = set(policy_approval_required)
+        protected.update(
+            name
+            for name in names
+            if name in self.tools and self.tools[name].approval_required
+        )
+        allowed = [
+            name
+            for name in names
+            if name in self.tools and (name not in protected or name in approved)
+        ]
+        pending = [
+            name
+            for name in names
+            if name in self.tools and name in protected and name not in approved
+        ]
+        return allowed, pending
+
     async def execute(
         self,
         session: AsyncSession,
@@ -440,12 +473,12 @@ class ToolRegistry:
         name: str,
         arguments: Dict[str, Any],
         allowed_names: List[str],
-        approved: bool = False,
+        approved_tools: Optional[List[str]] = None,
     ) -> Any:
         if name not in allowed_names or name not in self.tools:
             raise PermissionError(f"当前 Skill 无权使用工具：{name}")
         tool = self.tools[name]
-        if tool.approval_required and not approved:
+        if tool.approval_required and name not in set(approved_tools or []):
             raise PermissionError(f"工具 {name} 需要用户明确确认")
         validate_arguments(tool.parameters, arguments)
         started = time.perf_counter()

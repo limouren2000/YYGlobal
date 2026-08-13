@@ -141,28 +141,21 @@ class OpenAIResponsesProvider:
         skill: Skill,
         tools: ToolRegistry,
         emit: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        approved_tools: Optional[List[str]] = None,
     ) -> tuple:
+        allowed_names, pending_approval = tools.resolve_access(
+            skill.tools, skill.approval_required, approved_tools or []
+        )
+        if pending_approval and emit:
+            await emit(
+                "approval.required",
+                {"run_id": run_id, "tools": pending_approval},
+            )
         if not self.client:
             return self._local_response(message, context, skill), {
                 "mode": "local",
                 "total_tokens": 0,
             }
-        user_confirmed_write = any(
-            word in message
-            for word in ["确认创建", "确认生成", "生成并保存", "确认保存", "确认更新"]
-        )
-        allowed_names = [
-            name
-            for name in skill.tools
-            if (
-                name not in skill.approval_required
-                and not (
-                    name in getattr(tools, "tools", {})
-                    and tools.tools[name].approval_required
-                )
-            )
-            or user_confirmed_write
-        ]
         allowed = tools.allowed(allowed_names)
         definitions = [item.as_openai_tool() for item in allowed]
         instructions = (
@@ -241,7 +234,7 @@ class OpenAIResponsesProvider:
                             )
                         result = await tools.execute(
                             session, run_id, call.name, arguments, allowed_names,
-                            approved=user_confirmed_write,
+                            approved_tools=approved_tools,
                         )
                         if result in (None, [], {}):
                             error_type = "no_result"
@@ -416,28 +409,21 @@ class DashScopeChatProvider:
         skill: Skill,
         tools: ToolRegistry,
         emit: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        approved_tools: Optional[List[str]] = None,
     ) -> tuple:
+        allowed_names, pending_approval = tools.resolve_access(
+            skill.tools, skill.approval_required, approved_tools or []
+        )
+        if pending_approval and emit:
+            await emit(
+                "approval.required",
+                {"run_id": run_id, "tools": pending_approval},
+            )
         if not self.client:
             return OpenAIResponsesProvider._local_response(message, context, skill), {
                 "mode": "local",
                 "total_tokens": 0,
             }
-        user_confirmed_write = any(
-            word in message
-            for word in ["确认创建", "确认生成", "生成并保存", "确认保存", "确认更新"]
-        )
-        allowed_names = [
-            name
-            for name in skill.tools
-            if (
-                name not in skill.approval_required
-                and not (
-                    name in getattr(tools, "tools", {})
-                    and tools.tools[name].approval_required
-                )
-            )
-            or user_confirmed_write
-        ]
         definitions = [item.as_chat_tool() for item in tools.allowed(allowed_names)]
         instructions = (
             "你是 YYGlobal 留学申请 Agent。只使用上下文中的已确认事实；不确定时明确说明。"
@@ -533,7 +519,7 @@ class DashScopeChatProvider:
                             call.function.name,
                             arguments,
                             allowed_names,
-                            approved=user_confirmed_write,
+                            approved_tools=approved_tools,
                         )
                         if result in (None, [], {}):
                             error_type = "no_result"
