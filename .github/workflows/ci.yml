@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest + agent audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/api/pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e '.[dev]'
+
+      - name: Lint (ruff)
+        run: ruff check app tests
+
+      - name: Test (pytest)
+        run: pytest -q
+
+      - name: Core-Agent unit tests
+        working-directory: .
+        run: python -m unittest discover -s Core-Agent -p "test_*.py"
+
+      - name: Skill contract audit
+        working-directory: .
+        run: python Core-Agent/audit_skill_contracts.py
+
+  frontend:
+    name: Frontend (eslint + vitest + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (eslint)
+        run: pnpm --filter @yyglobal/web lint
+
+      - name: Test (vitest)
+        run: pnpm --filter @yyglobal/web test
+
+      - name: Build (next)
+        run: pnpm --filter @yyglobal/web build
