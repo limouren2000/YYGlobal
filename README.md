@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/yyglobal-hero-v2.png" alt="YYGlobal — AI-native study abroad application workspace" width="100%" />
+  <img src="docs/assets/yyglobal-hero-v3.png" alt="YYGlobal — AI-native study abroad application workspace" width="100%" />
 </p>
 
 <h1 align="center">YYGlobal</h1>
