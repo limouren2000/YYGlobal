@@ -138,8 +138,18 @@ class BatchVerifyResponse(BaseModel):
     results: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class ProgramRecommendationResponse(BaseModel):
+    program: ProgramResponse
+    score: float
+    reasons: List[str] = Field(default_factory=list)
+
+
 class ShortlistCreate(BaseModel):
     name: str = "我的 P0 选校方案"
+    program_ids: List[str]
+
+
+class ShortlistItemsUpdate(BaseModel):
     program_ids: List[str]
 
 
@@ -226,6 +236,7 @@ class MaterialPreflightResponse(BaseModel):
 class MaterialDraftGenerate(BaseModel):
     kind: str
     program_id: Optional[str] = None
+    slot_key: str = ""
     language: str = "English"
     prompt: str = Field(default="", max_length=10000)
 
@@ -239,7 +250,9 @@ class MaterialDraftUpdate(BaseModel):
 class MaterialDraftResponse(ORMModel):
     id: str
     program_id: Optional[str]
+    slot_key: str
     parent_id: Optional[str]
+    derived_from_id: Optional[str]
     root_id: Optional[str]
     version_number: int
     revision_type: str
@@ -273,9 +286,18 @@ class ApplicationPackageResponse(BaseModel):
     checklist: List[Dict[str, Any]]
     gaps: List[str]
     ready: bool
+    plan_confirmed: bool = False
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class MaterialAssetPreviewResponse(BaseModel):
+    title: str
+    kind: str
+    mime_type: str
+    content: str
+    raw_url: str = ""
 
 
 class ApplicationCreate(BaseModel):
@@ -338,6 +360,70 @@ class TaskResponse(ORMModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=10000)
     conversation_id: Optional[str] = None
+
+
+class WritingConversationCreate(BaseModel):
+    program_id: str
+    slot_key: str = Field(min_length=1, max_length=120)
+    material_kind: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=240)
+    resource_ids: List[str] = Field(default_factory=list)
+
+
+class WritingConversationUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=240)
+    resource_ids: Optional[List[str]] = None
+
+
+class AssistantConversationCreate(BaseModel):
+    title: str = Field(default="新对话", min_length=1, max_length=240)
+    resource_ids: List[str] = Field(default_factory=list)
+
+
+class AssistantConversationUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=240)
+    pinned: Optional[bool] = None
+    resource_ids: Optional[List[str]] = None
+
+
+class WritingMessageCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=10000)
+
+
+class WritingMessageResponse(ORMModel):
+    id: str
+    role: str
+    content: str
+    sources: List[Dict[str, Any]]
+    created_at: datetime
+
+
+class WritingConversationResponse(ORMModel):
+    id: str
+    title: str
+    program_id: str
+    slot_key: str
+    material_kind: str
+    resource_ids: List[str]
+    messages: List[WritingMessageResponse] = Field(default_factory=list)
+    latest_draft: Optional[MaterialDraftResponse] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssistantConversationResponse(BaseModel):
+    id: str
+    title: str
+    scene: str
+    program_id: Optional[str] = None
+    program_label: str = ""
+    slot_key: str = ""
+    material_kind: str = ""
+    pinned: bool = False
+    resource_ids: List[str] = Field(default_factory=list)
+    messages: List[WritingMessageResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
 
 
 class MemoryResponse(ORMModel):

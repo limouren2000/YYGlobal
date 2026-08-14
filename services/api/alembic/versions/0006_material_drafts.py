@@ -9,6 +9,7 @@ from typing import Sequence, Union
 from uuid import uuid4
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0006_material_drafts"
@@ -18,6 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("material_drafts"):
+        return
     op.create_table(
         "material_drafts",
         sa.Column("id", sa.String(36), primary_key=True, default=lambda: str(uuid4())),
@@ -42,4 +46,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("material_drafts")
+    if sa.inspect(op.get_bind()).has_table("material_drafts"):
+        op.drop_table("material_drafts")

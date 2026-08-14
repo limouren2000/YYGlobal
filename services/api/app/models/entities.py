@@ -194,7 +194,11 @@ class MaterialDraft(Base, TimestampMixin, OwnedMixin):
     program_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("programs.id"), nullable=True, index=True
     )
+    slot_key: Mapped[str] = mapped_column(String(120), default="", index=True)
     parent_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("material_drafts.id"), nullable=True, index=True
+    )
+    derived_from_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("material_drafts.id"), nullable=True, index=True
     )
     root_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
@@ -226,6 +230,7 @@ class ApplicationPackage(Base, TimestampMixin, OwnedMixin):
     checklist: Mapped[list] = mapped_column(JSON, default=list)
     gaps: Mapped[list] = mapped_column(JSON, default=list)
     ready: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    plan_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     status: Mapped[str] = mapped_column(String(40), default="needs_official_verification")
 
 
@@ -256,6 +261,13 @@ class Conversation(Base, TimestampMixin, OwnedMixin):
     __tablename__ = "conversations"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(String(240), default="新对话")
+    program_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("programs.id"), nullable=True, index=True
+    )
+    slot_key: Mapped[str] = mapped_column(String(120), default="", index=True)
+    material_kind: Mapped[str] = mapped_column(String(40), default="", index=True)
+    resource_ids: Mapped[list] = mapped_column(JSON, default=list)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
 class Message(Base, TimestampMixin, OwnedMixin):

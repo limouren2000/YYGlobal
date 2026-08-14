@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,16 +42,27 @@ class AgentHarness:
             conversation = Conversation(owner_id=settings.local_owner_id, title=message[:80])
             session.add(conversation)
             await session.flush()
+        else:
+            conversation.updated_at = datetime.now(timezone.utc)
+        pending_resource_ids = list(conversation.resource_ids or [])
+        attachment_sources = []
+        for resource_id in pending_resource_ids:
+            if resource_id.startswith("document:"):
+                attachment_sources.append({"type": "document", "id": resource_id.removeprefix("document:")})
+            elif resource_id.startswith("draft:"):
+                attachment_sources.append({"type": "reference_draft", "id": resource_id.removeprefix("draft:")})
         session.add(
             Message(
                 conversation_id=conversation.id,
                 owner_id=settings.local_owner_id,
                 role="user",
                 content=message,
+                sources=attachment_sources,
             )
         )
         skill = skill_registry.route(message)
-        context = await build_context(session, skill.name, message)
+        context = await build_context(session, skill.name, message, conversation)
+        conversation.resource_ids = []
         plan = build_plan(skill, message)
         run = AgentRun(
             owner_id=settings.local_owner_id,

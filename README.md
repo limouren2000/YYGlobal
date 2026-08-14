@@ -269,17 +269,18 @@ services/api/.venv/bin/python scripts/smoke_test.py
   如果这个方向对你有帮助，欢迎留下反馈，或从一个真实任务中的具体问题开始改进它。
 </p>
 
-## 👥 贡献者
+## 💬 交流群
 
-感谢所有为 YYGlobal 提交代码、问题反馈、产品建议和文档改进的贡献者。
+欢迎加入 YYGlobal 交流群，讨论产品体验、留学申请工作流、Agent 开发与项目贡献。
 
 <p align="center">
-  <a href="https://github.com/limouren2000/YYGlobal/graphs/contributors">
-    <img
-      src="https://contrib.rocks/image?repo=limouren2000/YYGlobal&max=100&columns=12&t=202608130930"
-      alt="Contributors"
-    />
-  </a>
+  <img
+    src="docs/assets/yyglobal-community-qr.png"
+    alt="YYGlobal 交流群二维码"
+    width="220"
+  />
 </p>
 
-贡献者列表会根据 GitHub 仓库的提交记录自动更新。欢迎从一个真实任务中的具体问题开始贡献：提交 Issue、改进文档、补充测试，或发起 Pull Request。
+<p align="center">
+  扫描二维码加入交流群
+</p>
