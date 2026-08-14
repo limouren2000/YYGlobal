@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/yyglobal-hero-v2.png" alt="YYGlobal — AI-native study abroad application workspace" width="100%" />
+  <img src="docs/assets/yyglobal-hero-v3.png" alt="YYGlobal — AI-native study abroad application workspace" width="100%" />
 </p>
 
 <h1 align="center">YYGlobal</h1>
@@ -242,7 +242,7 @@ services/api/.venv/bin/python scripts/smoke_test.py
 - CV / PS 只使用学生确认的真实经历，禁止补造课程、奖项和量化结果。
 - 项目材料和生成稿按项目、类型、版本独立管理。
 - 提交申请、付款、发送邮件等外部写操作必须经过用户确认。
-- 默认 `AUTH_ENABLED=false`，适合单人本地或受信环境；公网多用户认证与租户隔离仍在建设中。
+- 默认 `AUTH_ENABLED=false`，适合单人本地或受信环境，公网多用户认证与租户隔离仍在建设中。
 
 ## 🗺️ Roadmap
 
@@ -269,14 +269,18 @@ services/api/.venv/bin/python scripts/smoke_test.py
   如果这个方向对你有帮助，欢迎留下反馈，或从一个真实任务中的具体问题开始改进它。
 </p>
 
-## 👥 贡献者
+## 💬 交流群
 
-感谢所有为 YYGlobal 提交代码、问题反馈、产品建议和文档改进的贡献者。
+欢迎加入 YYGlobal 交流群，讨论产品体验、留学申请工作流、Agent 开发与项目贡献。
 
 <p align="center">
-  <a href="https://github.com/limouren2000/YYGlobal/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=limouren2000/YYGlobal" alt="YYGlobal contributors" />
-  </a>
+  <img
+    src="docs/assets/yyglobal-community-qr.png"
+    alt="YYGlobal 交流群二维码"
+    width="220"
+  />
 </p>
 
-贡献者列表会根据 GitHub 仓库的提交记录自动更新。欢迎从一个真实任务中的具体问题开始贡献：提交 Issue、改进文档、补充测试，或发起 Pull Request。
+<p align="center">
+  扫描二维码加入交流群
+</p>

@@ -65,7 +65,7 @@ def scan_file(path: Path) -> list[str]:
             hit = match.group(0)
             if is_placeholder(hit):
                 continue
-            findings.append(f"{path.relative_to(ROOT)}:{lineno} [{label}] {hit[:32]}...")
+            findings.append(f"{path.relative_to(ROOT)}:{lineno} [{label}]")
     return findings
 
 

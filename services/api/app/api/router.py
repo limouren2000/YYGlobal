@@ -45,6 +45,9 @@ from app.models.entities import (
 )
 from app.schemas.api import (
     AgentRunResponse,
+    AssistantConversationCreate,
+    AssistantConversationUpdate,
+    AssistantConversationResponse,
     ApplicationCreate,
     ApplicationPackageResponse,
     ApplicationResponse,
@@ -58,6 +61,7 @@ from app.schemas.api import (
     MaterialArtifactCreate,
     MaterialArtifactResponse,
     MaterialArtifactUpdate,
+    MaterialAssetPreviewResponse,
     MaterialDraftGenerate,
     MaterialDraftResponse,
     MaterialDraftUpdate,
@@ -70,11 +74,13 @@ from app.schemas.api import (
     PackageMaterialUpdate,
     ProfileResponse,
     ProfileUpdate,
+    ProgramRecommendationResponse,
     ProgramResponse,
     ProgramVerifyResponse,
     RequirementResponse,
     ShortlistCreate,
     ShortlistItemResponse,
+    ShortlistItemsUpdate,
     ShortlistResponse,
     SkillResponse,
     SourceResponse,
@@ -83,8 +89,15 @@ from app.schemas.api import (
     TaskUpdate,
     TimelineCreate,
     TraceResponse,
+    WritingConversationCreate,
+    WritingConversationResponse,
+    WritingConversationUpdate,
+    WritingMessageCreate,
+    WritingMessageResponse,
 )
 from app.services.business import (
+    add_shortlist_programs,
+    consolidate_shortlists,
     create_material_plan,
     create_shortlist,
     create_task,
@@ -92,7 +105,11 @@ from app.services.business import (
     get_or_create_application_package,
     get_program,
     get_requirement,
+    material_slots,
     profile_with_experiences,
+    recommendation_candidates,
+    remove_shortlist_program,
+    score_recommendation,
     search_programs_for_profile,
     update_profile,
 )
@@ -102,6 +119,8 @@ from app.services.documents import (
     infer_document_data,
     sha256_bytes,
 )
+
+
 from app.services.material_exports import (
     content_disposition,
     docx_export,
@@ -112,6 +131,7 @@ from app.services.requirements import verify_program_official
 from app.services.web import UnsafeUrlError
 
 router = APIRouter()
+active_writing_tasks: Dict[str, asyncio.Task] = {}
 
 
 def profile_response(profile: Any, experiences: List[Any]) -> ProfileResponse:
@@ -306,6 +326,8 @@ async def upload_document(
     if provider.available:
         try:
             extracted_data = await provider.extract_document(path, mime_type, kind, text)
+            if not text.strip():
+                text = str(extracted_data.get("summary") or "").strip()
             status = (
                 "parsed_multimodal"
                 if mime_type.startswith("image/") or not text.strip()
@@ -330,6 +352,70 @@ async def upload_document(
     await session.commit()
     await session.refresh(item)
     return DocumentResponse.model_validate(item)
+
+
+@router.get("/documents", response_model=List[DocumentResponse])
+async def list_documents(
+    session: AsyncSession = Depends(get_session),
+) -> List[DocumentResponse]:
+    items = list((await session.scalars(
+        select(Document).where(
+            Document.owner_id == settings.local_owner_id
+        ).order_by(Document.created_at.desc())
+    )).all())
+    return [DocumentResponse.model_validate(item) for item in items]
+
+
+@router.get("/documents/{document_id}/download")
+async def download_document(
+    document_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    item = await session.get(Document, document_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "材料不存在")
+    path = Path(item.path)
+    if not path.is_file():
+        raise HTTPException(404, "材料文件不存在")
+    return Response(
+        content=path.read_bytes(),
+        media_type=item.mime_type,
+        headers={"Content-Disposition": content_disposition(item.filename)},
+    )
+
+
+@router.get("/documents/{document_id}/content")
+async def view_document_content(
+    document_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    item = await session.get(Document, document_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "材料不存在")
+    path = Path(item.path)
+    if not path.is_file():
+        raise HTTPException(404, "材料文件不存在")
+    return Response(content=path.read_bytes(), media_type=item.mime_type)
+
+
+@router.delete("/documents/{document_id}", status_code=204)
+async def delete_document(
+    document_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    item = await session.get(Document, document_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "材料不存在")
+    path = Path(item.path)
+    await session.execute(delete(MaterialArtifact).where(
+        MaterialArtifact.owner_id == settings.local_owner_id,
+        MaterialArtifact.document_id == item.id,
+    ))
+    await session.delete(item)
+    await session.commit()
+    if path.is_file() and settings.upload_dir in path.parents:
+        path.unlink(missing_ok=True)
+    return Response(status_code=204)
 
 
 @router.post("/documents/{document_id}/confirm", response_model=ProfileResponse)
@@ -393,6 +479,55 @@ async def list_programs(
         session, q, country, field, use_profile=personalized
     )
     return [await serialize_program(session, item) for item in items]
+
+
+@router.post(
+    "/programs/recommendations",
+    response_model=List[ProgramRecommendationResponse],
+)
+async def recommend_programs(
+    q: str = Query("", max_length=200),
+    limit: int = Query(5, ge=1, le=5),
+    exclude_ids: str = Query("", max_length=10000),
+    session: AsyncSession = Depends(get_session),
+) -> List[ProgramRecommendationResponse]:
+    profile, _ = await profile_with_experiences(session)
+    if not q and (
+        not profile.confirmed or not profile.target_fields or not profile.target_countries
+    ):
+        raise HTTPException(400, "请先完成画像，再开始项目推荐")
+
+    excluded_program_ids = {
+        item.strip() for item in exclude_ids.split(",") if item.strip()
+    }
+    ranked = await recommendation_candidates(
+        session,
+        query=q,
+        limit=limit,
+        excluded_program_ids=excluded_program_ids,
+    )
+    output = []
+    for program, _, _ in ranked:
+        try:
+            await verify_program_official(session, program)
+        except Exception:
+            # The program remains visible with its direct official URL. Existing
+            # evidence is preserved and a later recommendation run can refresh it.
+            pass
+        requirement = await get_requirement(session, program.id)
+        refreshed_profile, experiences = await profile_with_experiences(session)
+        score, reasons = await score_recommendation(
+            refreshed_profile, experiences, program, requirement
+        )
+        output.append(
+            ProgramRecommendationResponse(
+                program=await serialize_program(session, program),
+                score=score,
+                reasons=reasons,
+            )
+        )
+    output.sort(key=lambda item: (-item.score, item.program.university, item.program.name))
+    return output
 
 
 @router.get("/programs/{program_id}", response_model=ProgramResponse)
@@ -505,6 +640,7 @@ async def serialize_shortlist(session: AsyncSession, item: Shortlist) -> Shortli
 
 @router.get("/shortlists", response_model=List[ShortlistResponse])
 async def list_shortlists(session: AsyncSession = Depends(get_session)) -> List[ShortlistResponse]:
+    await consolidate_shortlists(session)
     items = list(
         (
             await session.scalars(
@@ -525,6 +661,25 @@ async def post_shortlist(
     return await serialize_shortlist(session, item)
 
 
+@router.post("/shortlists/items", response_model=ShortlistResponse)
+async def add_shortlist_items(
+    payload: ShortlistItemsUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> ShortlistResponse:
+    item = await add_shortlist_programs(session, payload.program_ids)
+    return await serialize_shortlist(session, item)
+
+
+@router.delete("/shortlists/{shortlist_id}/items/{program_id}", status_code=204)
+async def delete_shortlist_item(
+    shortlist_id: str,
+    program_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    if not await remove_shortlist_program(session, shortlist_id, program_id):
+        raise HTTPException(404, "选校清单中没有该项目")
+
+
 async def serialize_application_package(
     session: AsyncSession, item: ApplicationPackage
 ) -> ApplicationPackageResponse:
@@ -539,6 +694,7 @@ async def serialize_application_package(
         checklist=item.checklist,
         gaps=item.gaps,
         ready=item.ready,
+        plan_confirmed=item.plan_confirmed,
         status=item.status,
         created_at=item.created_at,
         updated_at=item.updated_at,
@@ -592,9 +748,8 @@ async def update_package_material(
     allowed = {"ready", "needs_edit", "unverified", "missing", "manual_review"}
     if payload.status not in allowed:
         raise HTTPException(422, "不支持的材料适配状态")
-    if payload.status == "ready" and not item.official_verified:
-        raise HTTPException(422, "官网材料要求尚未核验，不能标记为符合要求")
-    checklist = list(item.checklist or [])
+    # Rebuild every JSON row so SQLAlchemy reliably persists nested changes.
+    checklist = [dict(row) for row in (item.checklist or [])]
     target = next(
         (row for row in checklist if row.get("material_key") == payload.material_key), None
     )
@@ -615,20 +770,75 @@ async def update_package_material(
         "selected_asset_id": payload.selected_asset_id,
         "note": payload.note,
     })
-    item.checklist = checklist
-    item.ready = item.official_verified and all(
-        row.get("status") == "ready" and row.get("selected_asset_id")
-        for row in checklist
-    )
-    item.status = "ready" if item.ready else (
-        "materials_in_progress" if item.official_verified else "needs_official_verification"
-    )
+    item.checklist = [dict(row) for row in checklist]
+    item.plan_confirmed = False
+    item.ready = False
+    item.status = "materials_in_progress"
     item.gaps = [
         f"待处理：{row.get('name')}" for row in checklist if row.get("status") != "ready"
     ]
     await session.commit()
     await session.refresh(item)
     return await serialize_application_package(session, item)
+
+
+@router.post(
+    "/application-packages/{package_id}/confirm-plan",
+    response_model=ApplicationPackageResponse,
+)
+async def confirm_package_plan(
+    package_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationPackageResponse:
+    item = await session.get(ApplicationPackage, package_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "项目申请包不存在")
+    checklist = [dict(row) for row in (item.checklist or [])]
+    unresolved = [row.get("name") for row in checklist if not row.get("selected_asset_id")]
+    if unresolved:
+        raise HTTPException(422, f"仍有材料没有当前方案：{'、'.join(str(value) for value in unresolved[:6])}")
+    item.plan_confirmed = True
+    item.ready = True
+    item.status = "ready"
+    await session.commit()
+    await session.refresh(item)
+    return await serialize_application_package(session, item)
+
+
+@router.get("/material-assets/{asset_type}/{asset_id}/preview", response_model=MaterialAssetPreviewResponse)
+async def preview_material_asset(
+    asset_type: str,
+    asset_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> MaterialAssetPreviewResponse:
+    if asset_type == "artifact":
+        artifact = await session.get(MaterialArtifact, asset_id)
+        if not artifact or artifact.owner_id != settings.local_owner_id:
+            raise HTTPException(404, "材料版本不存在")
+        asset_id = artifact.document_id
+        asset_type = "document"
+    if asset_type == "document":
+        item = await session.get(Document, asset_id)
+        if not item or item.owner_id != settings.local_owner_id:
+            raise HTTPException(404, "材料不存在")
+        return MaterialAssetPreviewResponse(
+            title=item.filename,
+            kind=item.kind,
+            mime_type=item.mime_type,
+            content=item.extracted_text,
+            raw_url=f"/api/documents/{item.id}/content",
+        )
+    if asset_type == "draft":
+        item = await session.get(MaterialDraft, asset_id)
+        if not item or item.owner_id != settings.local_owner_id:
+            raise HTTPException(404, "文稿版本不存在")
+        return MaterialAssetPreviewResponse(
+            title=f"{item.title} v{item.version_number}",
+            kind=item.kind,
+            mime_type="text/markdown",
+            content=item.content,
+        )
+    raise HTTPException(422, "不支持的材料资源类型")
 
 
 @router.get("/material-plans", response_model=List[MaterialPlanResponse])
@@ -794,13 +1004,20 @@ async def material_preflight(
 
 @router.get("/material-drafts", response_model=List[MaterialDraftResponse])
 async def list_material_drafts(
-    kind: str = Query(""), session: AsyncSession = Depends(get_session)
+    kind: str = Query(""),
+    program_id: str = Query(""),
+    slot_key: str = Query(""),
+    session: AsyncSession = Depends(get_session),
 ) -> List[MaterialDraft]:
     statement = select(MaterialDraft).where(
         MaterialDraft.owner_id == settings.local_owner_id
     )
     if kind:
         statement = statement.where(MaterialDraft.kind == kind)
+    if program_id:
+        statement = statement.where(MaterialDraft.program_id == program_id)
+    if slot_key:
+        statement = statement.where(MaterialDraft.slot_key == slot_key)
     return list(
         (await session.scalars(statement.order_by(MaterialDraft.updated_at.desc()))).all()
     )
@@ -834,14 +1051,25 @@ async def export_material_draft(
 async def generate_material_draft(
     payload: MaterialDraftGenerate, session: AsyncSession = Depends(get_session)
 ) -> MaterialDraft:
-    if payload.kind not in MATERIAL_KINDS:
-        raise HTTPException(422, "材料类型只支持 cv 或 ps")
+    if payload.kind not in {"cv", "ps", "recommendation"}:
+        raise HTTPException(422, "材料类型只支持 cv、ps 或 recommendation")
     if payload.language not in {"English", "Chinese"}:
         raise HTTPException(422, "生成语言只支持 English 或 Chinese")
     if check_user_input(payload.prompt):
         raise HTTPException(400, "附加题目包含不安全的指令内容")
     profile, experiences = await profile_with_experiences(session)
-    confirmed = [item for item in experiences if item.confirmed]
+    selected_resources = set(conversation.resource_ids or [])
+    confirmed_all = [item for item in experiences if item.confirmed]
+    selected_experience_ids = {
+        value.removeprefix("experience:")
+        for value in selected_resources
+        if value.startswith("experience:")
+    }
+    include_all_experiences = "confirmed_experiences" in selected_resources or not selected_experience_ids
+    confirmed = [
+        item for item in confirmed_all
+        if include_all_experiences or item.id in selected_experience_ids
+    ]
     if not profile.confirmed:
         raise HTTPException(400, "请先填写并确认申请画像")
     if not confirmed:
@@ -919,7 +1147,9 @@ async def generate_material_draft(
         id=version_id,
         owner_id=settings.local_owner_id,
         program_id=program.id if program else None,
+        slot_key=payload.slot_key,
         parent_id=None,
+        derived_from_id=None,
         root_id=version_id,
         version_number=1,
         revision_type="generated",
@@ -971,10 +1201,17 @@ async def update_material_draft(
         changed.append("复核状态")
     if not changed:
         raise HTTPException(400, "内容没有变化，无需创建新版本")
+    if changed == ["复核状态"]:
+        item.status = str(values["status"])
+        await session.commit()
+        await session.refresh(item)
+        return item
     new_item = MaterialDraft(
         owner_id=item.owner_id,
         program_id=item.program_id,
+        slot_key=item.slot_key,
         parent_id=item.id,
+        derived_from_id=item.derived_from_id,
         root_id=root_id,
         version_number=int(latest_version or item.version_number) + 1,
         revision_type="manual_edit",
@@ -993,6 +1230,623 @@ async def update_material_draft(
     await session.commit()
     await session.refresh(new_item)
     return new_item
+
+
+@router.post("/material-drafts/{draft_id}/restore", response_model=MaterialDraftResponse, status_code=201)
+async def restore_material_draft(
+    draft_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> MaterialDraft:
+    item = await session.get(MaterialDraft, draft_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "文稿不存在")
+    root_id = item.root_id or item.id
+    latest_version = await session.scalar(select(func.max(MaterialDraft.version_number)).where(
+        MaterialDraft.owner_id == settings.local_owner_id,
+        MaterialDraft.root_id == root_id,
+    ))
+    restored = MaterialDraft(
+        owner_id=item.owner_id,
+        program_id=item.program_id,
+        slot_key=item.slot_key,
+        parent_id=item.id,
+        derived_from_id=item.derived_from_id,
+        root_id=root_id,
+        version_number=int(latest_version or item.version_number) + 1,
+        revision_type="restored",
+        change_summary=f"基于 v{item.version_number} 恢复为新版本",
+        kind=item.kind,
+        title=item.title,
+        language=item.language,
+        prompt=item.prompt,
+        content=item.content,
+        source_experience_ids=item.source_experience_ids,
+        warnings=item.warnings,
+        model_info={**item.model_info, "restored_from": item.id},
+        status="draft",
+    )
+    session.add(restored)
+    await session.commit()
+    await session.refresh(restored)
+    return restored
+
+
+async def serialize_writing_conversation(
+    session: AsyncSession, conversation: Conversation
+) -> WritingConversationResponse:
+    messages = list((await session.scalars(
+        select(Message).where(
+            Message.conversation_id == conversation.id,
+            Message.owner_id == settings.local_owner_id,
+        ).order_by(Message.created_at)
+    )).all())
+    draft_candidates = list((await session.scalars(
+        select(MaterialDraft).where(
+            MaterialDraft.owner_id == settings.local_owner_id,
+            MaterialDraft.program_id == conversation.program_id,
+            MaterialDraft.slot_key == conversation.slot_key,
+        ).order_by(MaterialDraft.updated_at.desc())
+    )).all())
+    latest_draft = next((
+        draft for draft in draft_candidates
+        if draft.model_info.get("conversation_id") == conversation.id
+    ), None)
+    return WritingConversationResponse(
+        id=conversation.id,
+        title=conversation.title,
+        program_id=str(conversation.program_id),
+        slot_key=conversation.slot_key,
+        material_kind=conversation.material_kind,
+        resource_ids=conversation.resource_ids,
+        messages=[WritingMessageResponse.model_validate(item) for item in messages],
+        latest_draft=(MaterialDraftResponse.model_validate(latest_draft) if latest_draft else None),
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+    )
+
+
+@router.get("/writing-conversations", response_model=List[WritingConversationResponse])
+async def list_writing_conversations(
+    program_id: str = Query(""),
+    slot_key: str = Query(""),
+    session: AsyncSession = Depends(get_session),
+) -> List[WritingConversationResponse]:
+    statement = select(Conversation).where(
+        Conversation.owner_id == settings.local_owner_id,
+        Conversation.program_id.is_not(None),
+    )
+    if program_id:
+        statement = statement.where(Conversation.program_id == program_id)
+    if slot_key:
+        statement = statement.where(Conversation.slot_key == slot_key)
+    items = list((await session.scalars(statement.order_by(Conversation.updated_at.desc()))).all())
+    return [await serialize_writing_conversation(session, item) for item in items]
+
+
+@router.get("/assistant-conversations", response_model=List[AssistantConversationResponse])
+async def list_assistant_conversations(
+    session: AsyncSession = Depends(get_session),
+) -> List[AssistantConversationResponse]:
+    items = list((await session.scalars(
+        select(Conversation).where(
+            Conversation.owner_id == settings.local_owner_id
+        ).order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
+    )).all())
+    output = []
+    for item in items:
+        messages = list((await session.scalars(
+            select(Message).where(
+                Message.owner_id == settings.local_owner_id,
+                Message.conversation_id == item.id,
+            ).order_by(Message.created_at)
+        )).all())
+        program_label = ""
+        if item.program_id:
+            program = await get_program(session, item.program_id)
+            if program:
+                program_label = f"{program.university} · {program.name}"
+        output.append(AssistantConversationResponse(
+            id=item.id,
+            title=item.title,
+            scene=("material" if item.material_kind else "application"),
+            program_id=item.program_id,
+            program_label=program_label,
+            slot_key=item.slot_key,
+            material_kind=item.material_kind,
+            pinned=item.pinned,
+            resource_ids=item.resource_ids,
+            messages=[WritingMessageResponse.model_validate(message) for message in messages],
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+        ))
+    return output
+
+
+@router.post("/assistant-conversations", response_model=AssistantConversationResponse, status_code=201)
+async def create_assistant_conversation(
+    payload: AssistantConversationCreate,
+    session: AsyncSession = Depends(get_session),
+) -> AssistantConversationResponse:
+    item = Conversation(
+        owner_id=settings.local_owner_id,
+        title=payload.title.strip(),
+        resource_ids=payload.resource_ids,
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    return AssistantConversationResponse(
+        id=item.id,
+        title=item.title,
+        scene="application",
+        resource_ids=item.resource_ids,
+        messages=[],
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+@router.patch("/assistant-conversations/{conversation_id}", response_model=AssistantConversationResponse)
+async def update_assistant_conversation(
+    conversation_id: str,
+    payload: AssistantConversationUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> AssistantConversationResponse:
+    item = await session.get(Conversation, conversation_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "对话不存在")
+    values = payload.model_dump(exclude_unset=True)
+    if "title" in values:
+        values["title"] = str(values["title"]).strip()
+        if not values["title"]:
+            raise HTTPException(422, "对话名称不能为空")
+    for key, value in values.items():
+        setattr(item, key, value)
+    await session.commit()
+    await session.refresh(item)
+    messages = list((await session.scalars(select(Message).where(
+        Message.owner_id == settings.local_owner_id,
+        Message.conversation_id == item.id,
+    ).order_by(Message.created_at))).all())
+    program_label = ""
+    if item.program_id:
+        program = await get_program(session, item.program_id)
+        if program:
+            program_label = f"{program.university} · {program.name}"
+    return AssistantConversationResponse(
+        id=item.id,
+        title=item.title,
+        scene=("material" if item.material_kind else "application"),
+        program_id=item.program_id,
+        program_label=program_label,
+        slot_key=item.slot_key,
+        material_kind=item.material_kind,
+        pinned=item.pinned,
+        resource_ids=item.resource_ids,
+        messages=[WritingMessageResponse.model_validate(message) for message in messages],
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+@router.delete("/assistant-conversations/{conversation_id}", status_code=204)
+async def delete_assistant_conversation(
+    conversation_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    item = await session.get(Conversation, conversation_id)
+    if not item or item.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "对话不存在")
+    await session.execute(delete(Message).where(
+        Message.owner_id == settings.local_owner_id,
+        Message.conversation_id == item.id,
+    ))
+    await session.delete(item)
+    await session.commit()
+    return Response(status_code=204)
+
+
+@router.post("/writing-conversations", response_model=WritingConversationResponse, status_code=201)
+async def create_writing_conversation(
+    payload: WritingConversationCreate,
+    session: AsyncSession = Depends(get_session),
+) -> WritingConversationResponse:
+    if payload.material_kind not in {"cv", "ps", "recommendation"}:
+        raise HTTPException(422, "不支持的材料类型")
+    if not await get_program(session, payload.program_id):
+        raise HTTPException(404, "项目不存在")
+    item = Conversation(
+        owner_id=settings.local_owner_id,
+        title=payload.title,
+        program_id=payload.program_id,
+        slot_key=payload.slot_key,
+        material_kind=payload.material_kind,
+        resource_ids=payload.resource_ids,
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    return await serialize_writing_conversation(session, item)
+
+
+@router.patch("/writing-conversations/{conversation_id}", response_model=WritingConversationResponse)
+async def update_writing_conversation(
+    conversation_id: str,
+    payload: WritingConversationUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> WritingConversationResponse:
+    item = await session.get(Conversation, conversation_id)
+    if not item or item.owner_id != settings.local_owner_id or not item.program_id:
+        raise HTTPException(404, "文书对话不存在")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(item, key, value)
+    await session.commit()
+    await session.refresh(item)
+    return await serialize_writing_conversation(session, item)
+
+
+@router.post(
+    "/writing-conversations/{conversation_id}/messages",
+    response_model=WritingConversationResponse,
+)
+async def send_writing_message(
+    conversation_id: str,
+    payload: WritingMessageCreate,
+    session: AsyncSession = Depends(get_session),
+) -> WritingConversationResponse:
+    conversation = await session.get(Conversation, conversation_id)
+    if not conversation or conversation.owner_id != settings.local_owner_id or not conversation.program_id:
+        raise HTTPException(404, "文书对话不存在")
+    if check_user_input(payload.message):
+        raise HTTPException(400, "消息包含不安全的指令内容")
+    current_task = asyncio.current_task()
+    previous_task = active_writing_tasks.get(conversation_id)
+    if previous_task and not previous_task.done() and previous_task is not current_task:
+        raise HTTPException(409, "当前对话仍有内容正在生成")
+    if current_task:
+        active_writing_tasks[conversation_id] = current_task
+    try:
+        return await _generate_writing_reply(conversation, payload, session)
+    except asyncio.CancelledError:
+        await asyncio.shield(session.rollback())
+        raise HTTPException(409, "本次生成已停止") from None
+    finally:
+        if active_writing_tasks.get(conversation_id) is current_task:
+            active_writing_tasks.pop(conversation_id, None)
+
+
+@router.post("/writing-conversations/{conversation_id}/cancel")
+async def cancel_writing_generation(
+    conversation_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, bool]:
+    conversation = await session.get(Conversation, conversation_id)
+    if not conversation or conversation.owner_id != settings.local_owner_id:
+        raise HTTPException(404, "文书对话不存在")
+    task = active_writing_tasks.get(conversation_id)
+    if not task or task.done():
+        return {"cancelled": False}
+    task.cancel()
+    return {"cancelled": True}
+
+
+async def _generate_writing_reply(
+    conversation: Conversation,
+    payload: WritingMessageCreate,
+    session: AsyncSession,
+) -> WritingConversationResponse:
+    profile, experiences = await profile_with_experiences(session)
+    pending_resources = set(conversation.resource_ids or [])
+    selected_resources = set(pending_resources)
+    previous_messages = list((await session.scalars(select(Message).where(
+        Message.owner_id == settings.local_owner_id,
+        Message.conversation_id == conversation.id,
+    ).order_by(Message.created_at))).all())
+    for message in previous_messages:
+        if message.role != "user":
+            continue
+        for source in message.sources or []:
+            if source.get("type") == "document" and source.get("id"):
+                selected_resources.add(f"document:{source['id']}")
+            elif source.get("type") in {"draft", "reference_draft"} and source.get("id"):
+                selected_resources.add(f"draft:{source['id']}")
+    confirmed_all = [item for item in experiences if item.confirmed]
+    selected_experience_ids = {
+        value.removeprefix("experience:")
+        for value in selected_resources
+        if value.startswith("experience:")
+    }
+    include_all_experiences = "confirmed_experiences" in selected_resources
+    confirmed = [
+        item for item in confirmed_all
+        if include_all_experiences or item.id in selected_experience_ids
+    ]
+    program = await get_program(session, conversation.program_id)
+    requirement = await get_requirement(session, conversation.program_id)
+    if not program:
+        raise HTTPException(404, "项目不存在")
+    document_ids = {
+        value.removeprefix("document:")
+        for value in selected_resources
+        if value.startswith("document:")
+    }
+    draft_ids = {
+        value.removeprefix("draft:")
+        for value in selected_resources
+        if value.startswith("draft:")
+    }
+    reference_documents = list((await session.scalars(select(Document).where(
+        Document.owner_id == settings.local_owner_id,
+        Document.id.in_(document_ids),
+    ))).all()) if document_ids else []
+    for item in reference_documents:
+        if not item.extracted_text.strip() and provider.available and Path(item.path).is_file():
+            try:
+                extracted = await provider.extract_document(Path(item.path), item.mime_type, item.kind, "")
+                summary = str(extracted.get("summary") or "").strip()
+                if summary:
+                    item.extracted_data = extracted
+                    item.extracted_text = summary[:200_000]
+                    item.parse_status = "parsed_multimodal"
+            except Exception:
+                pass
+    reference_drafts = list((await session.scalars(select(MaterialDraft).where(
+        MaterialDraft.owner_id == settings.local_owner_id,
+        MaterialDraft.id.in_(draft_ids),
+    ))).all()) if draft_ids else []
+    if "historical_drafts" in selected_resources:
+        historical_drafts = list((await session.scalars(select(MaterialDraft).where(
+            MaterialDraft.owner_id == settings.local_owner_id,
+            MaterialDraft.status == "reviewed",
+        ).order_by(MaterialDraft.updated_at.desc()))).all())
+        latest_by_root: Dict[str, MaterialDraft] = {}
+        for item in historical_drafts:
+            root_key = item.root_id or item.id
+            if root_key not in latest_by_root:
+                latest_by_root[root_key] = item
+        known_draft_ids = {item.id for item in reference_drafts}
+        reference_drafts.extend(
+            item for item in latest_by_root.values() if item.id not in known_draft_ids
+        )
+    active_memories = list((await session.scalars(select(Memory).where(
+        Memory.owner_id == settings.local_owner_id,
+        Memory.active.is_(True),
+    ).order_by(Memory.updated_at.desc()))).all())
+    memories_by_key: Dict[str, Memory] = {}
+    for item in active_memories:
+        memories_by_key.setdefault(f"{item.memory_type}:{item.key}", item)
+    official_context: Dict[str, Any] = {}
+    if requirement:
+        current_slot = next((
+            item for item in material_slots([str(value) for value in requirement.materials])
+            if item.get("slot_key") == conversation.slot_key
+        ), None)
+        evidence_rows = list((await session.scalars(select(EvidenceChunk).where(
+            EvidenceChunk.program_id == program.id,
+            EvidenceChunk.field == "materials",
+        ).order_by(EvidenceChunk.confidence.desc()))).all())
+        source_ids = {item.source_id for item in evidence_rows}
+        source_rows = list((await session.scalars(select(ProgramSource).where(
+            ProgramSource.id.in_(source_ids)
+        ))).all()) if source_ids else []
+        source_urls = {item.id: item.url for item in source_rows}
+        exact_requirement = current_slot.get("official_name") if current_slot else ""
+        requirement_terms = {
+            term for term in re.findall(r"[a-zA-Z]{3,}|[\u4e00-\u9fff]{2,}", exact_requirement.lower())
+            if term not in {"the", "and", "for", "with", "your", "申请", "材料"}
+        }
+        evidence_payload = [{
+            "quote": item.quote,
+            "locator": item.locator,
+            "url": source_urls.get(item.source_id, program.official_url),
+            "confidence": item.confidence,
+        } for item in evidence_rows]
+        relevant_evidence = [item for item in evidence_payload if any(
+            term in str(item["quote"]).lower() for term in requirement_terms
+        )]
+        relevant_quotes = {str(item["quote"]) for item in relevant_evidence}
+        official_context = {
+            "slot_key": conversation.slot_key,
+            "material_name": current_slot.get("name") if current_slot else conversation.material_kind,
+            "exact_requirement": exact_requirement,
+            "all_material_requirements": requirement.materials,
+            "verified": requirement.verified,
+            "official_url": program.official_url,
+            "evidence": relevant_evidence,
+            "general_evidence": [
+                item for item in evidence_payload if str(item["quote"]) not in relevant_quotes
+            ],
+        }
+    user_message = Message(
+        owner_id=settings.local_owner_id,
+        conversation_id=conversation.id,
+        role="user",
+        content=payload.message,
+        sources=[
+            *[{"type": "document", "id": value.removeprefix("document:")} for value in pending_resources if value.startswith("document:")],
+            *[{"type": "reference_draft", "id": value.removeprefix("draft:")} for value in pending_resources if value.startswith("draft:")],
+        ],
+    )
+    session.add(user_message)
+    conversation.resource_ids = [
+        value for value in conversation.resource_ids
+        if not value.startswith(("document:", "draft:"))
+    ]
+    await session.flush()
+    history = list((await session.scalars(
+        select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at)
+    )).all())
+    conversation_drafts = list((await session.scalars(select(MaterialDraft).where(
+        MaterialDraft.owner_id == settings.local_owner_id,
+        MaterialDraft.program_id == program.id,
+        MaterialDraft.slot_key == conversation.slot_key,
+    ).order_by(MaterialDraft.updated_at.desc()))).all())
+    current_draft = next((
+        item for item in conversation_drafts
+        if item.model_info.get("conversation_id") == conversation.id
+    ), None)
+    generation_input = {
+        "interaction_mode": "assistant",
+        "kind": conversation.material_kind,
+        "language": "English",
+        "prompt": payload.message,
+        "conversation_history": [{"role": item.role, "content": item.content} for item in history],
+        "resource_ids": conversation.resource_ids,
+        "slot_key": conversation.slot_key,
+        "official_requirements": official_context,
+        "profile": ({
+            "full_name": profile.full_name,
+            "current_school": profile.current_school,
+            "current_major": profile.current_major,
+            "degree": profile.degree,
+            "gpa": profile.gpa,
+            "gpa_scale": profile.gpa_scale,
+            "language_scores": profile.language_scores,
+            "target_fields": profile.target_fields,
+            "target_countries": profile.target_countries,
+            "intake": profile.intake,
+            "budget": profile.budget,
+            "preferences": profile.preferences,
+        } if "profile" in selected_resources else {}),
+        "memories": [{
+            "type": item.memory_type,
+            "key": item.key,
+            "value": item.value,
+            "source_type": item.source_type,
+        } for item in memories_by_key.values()],
+        "confirmed_experiences": [{
+            "id": item.id, "kind": item.kind, "title": item.title,
+            "organization": item.organization, "start_date": item.start_date,
+            "end_date": item.end_date, "description": item.description, "tags": item.tags,
+        } for item in confirmed],
+        "reference_documents": [{
+            "id": item.id,
+            "filename": item.filename,
+            "kind": item.kind,
+            "content": (item.extracted_text or str((item.extracted_data or {}).get("summary") or ""))[:20_000],
+        } for item in reference_documents],
+        "reference_drafts": [{
+            "id": item.id,
+            "title": item.title,
+            "kind": item.kind,
+            "source_program_id": item.program_id,
+            "content": item.content[:20_000],
+        } for item in reference_drafts],
+        "current_draft": ({
+            "id": current_draft.id,
+            "version": current_draft.version_number,
+            "title": current_draft.title,
+            "content": current_draft.content,
+            "status": current_draft.status,
+        } if current_draft else {}),
+        "program": {
+            "id": program.id, "university": program.university, "name": program.name,
+            "field": program.field, "official_url": program.official_url,
+        },
+    }
+    try:
+        generated = await provider.generate_material(generation_input)
+    except Exception as exc:
+        raise HTTPException(502, f"大模型生成失败：{str(exc)[:300]}") from exc
+    response_type = str(generated.get("response_type", "chat"))
+    context_sources = [
+        *[{"type": "document", "id": item.id, "label": item.filename} for item in reference_documents],
+        *[{"type": "reference_draft", "id": item.id, "label": item.title} for item in reference_drafts],
+        *([{
+            "type": "official_requirement",
+            "url": program.official_url,
+            "evidence_count": len(official_context.get("evidence", [])),
+            "general_evidence_count": len(official_context.get("general_evidence", [])),
+        }] if official_context else []),
+        {"type": "conversation_history", "message_count": len(history)},
+        {"type": "memory", "count": len(memories_by_key)},
+        *([{"type": "current_draft", "id": current_draft.id, "version": current_draft.version_number}] if current_draft else []),
+    ]
+    if response_type == "chat":
+        message_content = str(generated.get("message", "")).strip()
+        if not message_content or verify_output(message_content):
+            raise HTTPException(422, "对话回复未通过完整性或安全检查")
+        session.add(Message(
+            owner_id=settings.local_owner_id,
+            conversation_id=conversation.id,
+            role="assistant",
+            content=message_content,
+            sources=[{"type": "response_mode", "value": "chat"}, *context_sources],
+        ))
+        conversation.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(conversation)
+        return await serialize_writing_conversation(session, conversation)
+    if response_type != "draft":
+        raise HTTPException(422, "模型返回了无法识别的材料响应类型")
+    content = str(generated.get("content", "")).strip()
+    if not content or verify_output(content):
+        raise HTTPException(422, "生成内容未通过完整性或安全检查")
+    base_draft = next((
+        item for item in conversation_drafts
+        if item.model_info.get("conversation_id") == conversation.id
+    ), None)
+    if not base_draft:
+        base_draft = next((
+            item for item in reference_drafts
+            if item.program_id == program.id and item.slot_key == conversation.slot_key
+        ), None)
+    cross_project_source = next((
+        item for item in reference_drafts
+        if item.program_id and item.program_id != program.id
+    ), None)
+    root_id = (base_draft.root_id or base_draft.id) if base_draft else None
+    latest_version = await session.scalar(select(func.max(MaterialDraft.version_number)).where(
+        MaterialDraft.owner_id == settings.local_owner_id,
+        MaterialDraft.root_id == root_id,
+    )) if root_id else None
+    version = int(latest_version or 0) + 1
+    draft = MaterialDraft(
+        owner_id=settings.local_owner_id,
+        program_id=program.id,
+        slot_key=conversation.slot_key,
+        parent_id=base_draft.id if base_draft else None,
+        derived_from_id=cross_project_source.id if not base_draft and cross_project_source else None,
+        root_id=root_id,
+        version_number=version,
+        revision_type=("ai_revision" if base_draft else "derived" if cross_project_source else "generated"),
+        change_summary=(
+            f"AI 基于 v{base_draft.version_number} 修改：{payload.message[:100]}"
+            if base_draft else
+            f"基于其他项目文稿创建：{payload.message[:100]}"
+            if cross_project_source else
+            f"由 AI 首次生成：{payload.message[:100]}"
+        ),
+        kind=conversation.material_kind,
+        title=str(generated.get("title") or conversation.title)[:240],
+        language="English",
+        prompt=payload.message,
+        content=content,
+        source_experience_ids=[item.id for item in confirmed],
+        warnings=list(generated.get("warnings", [])),
+        model_info={**dict(generated.get("model_info", {})), "conversation_id": conversation.id},
+        status="draft",
+    )
+    session.add(draft)
+    await session.flush()
+    if not draft.root_id:
+        draft.root_id = draft.id
+    assistant_message = Message(
+        owner_id=settings.local_owner_id,
+        conversation_id=conversation.id,
+        role="assistant",
+        content=content,
+        sources=[
+            {"type": "response_mode", "value": "draft"},
+            {"type": "draft", "id": draft.id, "version": version},
+            *context_sources,
+        ],
+    )
+    session.add(assistant_message)
+    conversation.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(conversation)
+    return await serialize_writing_conversation(session, conversation)
 
 
 APPLICATION_STATUSES = {
@@ -1225,7 +2079,10 @@ async def list_memories(session: AsyncSession = Depends(get_session)) -> List[Me
             )
         ).all()
     )
-    return [MemoryResponse.model_validate(item) for item in items]
+    unique: Dict[str, Memory] = {}
+    for item in items:
+        unique.setdefault(f"{item.memory_type}:{item.key}", item)
+    return [MemoryResponse.model_validate(item) for item in unique.values()]
 
 
 @router.delete("/memories/{memory_id}", status_code=204)

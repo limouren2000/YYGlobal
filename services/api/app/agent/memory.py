@@ -15,16 +15,24 @@ async def persist_confirmed_memory(
     source_id: str,
     memory_type: str = "semantic",
 ) -> Memory:
-    existing = await session.scalar(
+    existing_items = list((await session.scalars(
         select(Memory).where(
             Memory.owner_id == settings.local_owner_id,
             Memory.memory_type == memory_type,
             Memory.key == key,
             Memory.active.is_(True),
-        )
-    )
-    if existing and existing.value != value:
-        existing.active = False
+        ).order_by(Memory.updated_at.desc())
+    )).all())
+    matching = next((item for item in existing_items if item.value == value), None)
+    if matching:
+        for item in existing_items:
+            if item.id != matching.id:
+                item.active = False
+        await session.commit()
+        await session.refresh(matching)
+        return matching
+    for item in existing_items:
+        item.active = False
     item = Memory(
         owner_id=settings.local_owner_id,
         memory_type=memory_type,
