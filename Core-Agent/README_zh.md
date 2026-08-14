@@ -91,3 +91,17 @@ python Core-Agent/material_checklist.py \
 ```
 
 当结果需要被其他工具消费时，可添加 `--json`。
+
+## 个人陈述质量检查
+
+`ps_quality_checker.py` 把 `ps-planner` skill 在自己 prompt 里声明的三项验收条件——贴题、不误用学校名称、素材可追溯——落成确定性检查。它会标记遗留占位符、超出配置区间的字数、看起来未覆盖的题目要求、引用不在已确认集合中的经历，以及与目标项目不符的学校名称。
+
+输入是一份 JSON bundle，包含 `ps-planner` 的输出、目标项目和申请人已确认的经历：
+
+```bash
+python Core-Agent/ps_quality_checker.py ps-bundle.json
+python Core-Agent/ps_quality_checker.py ps-bundle.json --json
+python -m unittest Core-Agent/test_ps_quality_checker.py -v
+```
+
+无错误时命令以 `0` 退出，发现错误时以 `1` 退出，输入无法读取或解析时以 `2` 退出。警告不会导致检查失败。

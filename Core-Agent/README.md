@@ -190,3 +190,23 @@ python Core-Agent/program_code_validator.py "us-mscs" --json
 
 命令以 `0` 表示编号有效、`1` 表示无效。`--json` 输出结构化结果，包含规范化
 后的编号与识别出的入学学期，便于其他工具消费。
+## Personal statement quality check
+
+`ps_quality_checker.py` turns the three acceptance criteria the `ps-planner`
+skill declares in its own prompt — stay on-topic, do not misuse the school
+name, and only cite traceable material — into deterministic checks. It flags
+leftover placeholders, word counts outside the configured limits, prompt
+requirements that appear unaddressed, cited experiences that are not among the
+confirmed set, and school names that differ from the target program.
+
+The input is a JSON bundle mirroring the `ps-planner` output plus the target
+program and the applicant's confirmed experiences:
+
+```bash
+python Core-Agent/ps_quality_checker.py ps-bundle.json
+python Core-Agent/ps_quality_checker.py ps-bundle.json --json
+python -m unittest Core-Agent/test_ps_quality_checker.py -v
+```
+
+The command exits with `0` when no errors are found, `1` when errors are found,
+and `2` when the input cannot be read or parsed. Warnings do not fail the check.
