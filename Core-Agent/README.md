@@ -85,6 +85,37 @@ python -m unittest Core-Agent/test_agent_run_budget_auditor.py -v
 The defaults match YYGlobal's current Agent settings. Exit codes are `0` when
 the run is within budget, `1` for budget or trace-integrity findings, and `2`
 when the input cannot be read or parsed.
+## Agent handoff validation
+
+`agent_handoff_validator.py` validates a compact JSON handoff before one Agent
+passes work to another. It requires distinct sender and receiver names, a
+summary, at least one actionable next step, and lists for completed work,
+evidence, and risks. A blocked handoff must state its blocker in `risks`.
+
+```bash
+python Core-Agent/agent_handoff_validator.py handoff.json
+python Core-Agent/agent_handoff_validator.py handoff.json --json
+python -m unittest Core-Agent/test_agent_handoff_validator.py -v
+```
+
+Example:
+
+```json
+{
+  "handoff_id": "research-to-writer-001",
+  "from_agent": "research-agent",
+  "to_agent": "writing-agent",
+  "summary": "Official requirements have been verified.",
+  "completed": ["Checked the program deadline."],
+  "next_steps": ["Draft an application timeline."],
+  "evidence": ["https://example.edu/admissions"],
+  "risks": [],
+  "status": "ready"
+}
+```
+
+The command exits with `0` for a valid handoff, `1` for contract violations,
+and `2` for unreadable or invalid JSON.
 
 ## Official evidence bundle audit
 
@@ -198,3 +229,38 @@ python Core-Agent/material_checklist.py \
 ```
 
 Add `--json` when the result needs to be consumed by another tool.
+
+## Program code validation
+
+`program_code_validator.py` 校验留学申请场景中的项目编号格式，只使用 Python
+标准库。项目编号由字母、数字和连字符组成（如 `USC-MSCS`），末尾可携带入学
+学期后缀（如 `-2026FALL` / `-2027SPRING`），用于研究项目、创建选校清单等
+流程前的统一规范化。
+
+```bash
+python Core-Agent/program_code_validator.py "USC-MSCS-2026FALL"
+python Core-Agent/program_code_validator.py "us-mscs" --json
+```
+
+命令以 `0` 表示编号有效、`1` 表示无效。`--json` 输出结构化结果，包含规范化
+后的编号与识别出的入学学期，便于其他工具消费。
+## Personal statement quality check
+
+`ps_quality_checker.py` turns the three acceptance criteria the `ps-planner`
+skill declares in its own prompt — stay on-topic, do not misuse the school
+name, and only cite traceable material — into deterministic checks. It flags
+leftover placeholders, word counts outside the configured limits, prompt
+requirements that appear unaddressed, cited experiences that are not among the
+confirmed set, and school names that differ from the target program.
+
+The input is a JSON bundle mirroring the `ps-planner` output plus the target
+program and the applicant's confirmed experiences:
+
+```bash
+python Core-Agent/ps_quality_checker.py ps-bundle.json
+python Core-Agent/ps_quality_checker.py ps-bundle.json --json
+python -m unittest Core-Agent/test_ps_quality_checker.py -v
+```
+
+The command exits with `0` when no errors are found, `1` when errors are found,
+and `2` when the input cannot be read or parsed. Warnings do not fail the check.

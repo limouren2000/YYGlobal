@@ -67,6 +67,36 @@ def object_schema(properties: Dict[str, Any], required: List[str]) -> Dict[str, 
     }
 
 
+def _validate_value(schema: Dict[str, Any], value: Any, path: str) -> None:
+    expected = schema.get("type")
+    if expected == "object":
+        if not isinstance(value, dict):
+            raise ValueError(f"工具参数 {path} 类型应为 object")
+        properties = schema.get("properties", {})
+        missing = [name for name in schema.get("required", []) if name not in value]
+        if missing:
+            raise ValueError(f"工具参数 {path} 缺少必填字段：{', '.join(missing)}")
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(set(value) - set(properties))
+            if unknown:
+                raise ValueError(f"工具参数 {path} 包含未声明字段：{', '.join(unknown)}")
+        for name, item in value.items():
+            if name in properties:
+                _validate_value(properties[name], item, f"{path}.{name}")
+        return
+    if expected == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"工具参数 {path} 类型应为 array")
+        if "items" in schema:
+            for index, item in enumerate(value):
+                _validate_value(schema["items"], item, f"{path}[{index}]")
+        return
+    if expected == "string" and not isinstance(value, str):
+        raise ValueError(f"工具参数 {path} 类型应为 string")
+    if expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        raise ValueError(f"工具参数 {path} 类型应为 number")
+
+
 def validate_arguments(schema: Dict[str, Any], arguments: Dict[str, Any]) -> None:
     if not isinstance(arguments, dict):
         raise ValueError("工具参数必须是对象")
@@ -78,11 +108,9 @@ def validate_arguments(schema: Dict[str, Any], arguments: Dict[str, Any]) -> Non
         unknown = sorted(set(arguments) - set(properties))
         if unknown:
             raise ValueError(f"包含未声明工具参数：{', '.join(unknown)}")
-    python_types = {"string": str, "array": list, "object": dict, "number": (int, float)}
     for name, value in arguments.items():
-        expected = properties.get(name, {}).get("type")
-        if expected in python_types and not isinstance(value, python_types[expected]):
-            raise ValueError(f"工具参数 {name} 类型应为 {expected}")
+        if name in properties:
+            _validate_value(properties[name], value, name)
 
 
 async def tool_get_profile(session: AsyncSession, arguments: Dict[str, Any]) -> Any:
