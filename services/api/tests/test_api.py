@@ -248,6 +248,79 @@ def test_shortlist_materials_and_timeline(client):
     assert "申请包尚未就绪" in application.text
 
 
+def test_recommendations_and_persistent_shortlist_membership(client, monkeypatch):
+    profile = {
+        "full_name": "推荐测试学生",
+        "current_school": "Test University",
+        "current_major": "Software Engineering",
+        "degree": "Bachelor",
+        "gpa": 3.7,
+        "gpa_scale": 4.0,
+        "language_scores": {"TOEFL": 105},
+        "target_countries": ["United States"],
+        "target_fields": ["Computer Science"],
+        "intake": "2027 Fall",
+        "budget": 70000,
+        "preferences": {"career_goal": "AI engineering"},
+        "confirmed": True,
+        "experiences": [
+            {
+                "kind": "project",
+                "title": "Grounded RAG",
+                "description": "Built an evidence-backed retrieval system.",
+                "confirmed": True,
+            }
+        ],
+    }
+    assert client.put("/api/profile", json=profile).status_code == 200
+
+    async def skip_live_fetch(session, program):
+        return None, {}
+
+    monkeypatch.setattr("app.api.router.verify_program_official", skip_live_fetch)
+    recommendations = client.post("/api/programs/recommendations?limit=5")
+    assert recommendations.status_code == 200
+    body = recommendations.json()
+    assert len(body) == 5
+    assert all(item["reasons"] for item in body)
+    assert [item["score"] for item in body] == sorted(
+        [item["score"] for item in body], reverse=True
+    )
+
+    first_ids = [item["program"]["id"] for item in body]
+    next_page = client.post(
+        "/api/programs/recommendations?limit=5&exclude_ids=" + ",".join(first_ids)
+    )
+    assert next_page.status_code == 200
+    next_ids = [item["program"]["id"] for item in next_page.json()]
+    assert set(first_ids).isdisjoint(next_ids)
+
+    program_ids = [item["program"]["id"] for item in body[:2]]
+    added = client.post("/api/shortlists/items", json={"program_ids": program_ids})
+    assert added.status_code == 200
+    shortlist = added.json()
+    assert set(program_ids) <= {item["program"]["id"] for item in shortlist["items"]}
+
+    repeated = client.post("/api/shortlists/items", json={"program_ids": program_ids})
+    assert repeated.status_code == 200
+    assert len(
+        [
+            item
+            for item in repeated.json()["items"]
+            if item["program"]["id"] in program_ids
+        ]
+    ) == 2
+
+    removed = client.delete(
+        f"/api/shortlists/{shortlist['id']}/items/{program_ids[0]}"
+    )
+    assert removed.status_code == 204
+    current = client.get("/api/shortlists").json()[0]
+    assert program_ids[0] not in {item["program"]["id"] for item in current["items"]}
+    packages = client.get("/api/application-packages").json()
+    assert program_ids[0] not in {item["program"]["id"] for item in packages}
+
+
 def test_skills_and_demo_mcp(client):
     skills = client.get("/api/skills")
     assert skills.status_code == 200

@@ -8,7 +8,11 @@ from app.agent.skills import local_skill_output, parse_skill_output, skill_regis
 from app.core.database import SessionLocal
 from app.schemas.api import ProfileUpdate
 from app.services.business import search_programs_for_profile, update_profile
-from app.services.requirements import extract_requirement_candidates, merge_ai_extraction
+from app.services.requirements import (
+    extract_requirement_candidates,
+    merge_ai_extraction,
+    merge_source_extractions,
+)
 
 
 async def test_catalog_is_driven_by_profile_target_field():
@@ -121,6 +125,34 @@ def test_ai_requirement_evidence_must_exist_verbatim():
     assert merged.get("tuition") is None
     assert merged["materials"] == ["CV"]
     assert all(item["quote"] in text for item in merged["evidence"])
+
+
+def test_merged_requirements_do_not_promote_past_deadlines():
+    source = SimpleNamespace(id="source-1", url="https://example.edu/program")
+    merged = merge_source_extractions(
+        [
+            (
+                source,
+                {
+                    "deadline": "2024-02-01",
+                    "deadline_raw": "February 1",
+                    "deadlines": [
+                        {"date": "2024-02-01", "raw": "February 1", "round": ""}
+                    ],
+                    "evidence": [
+                        {
+                            "field": "deadline",
+                            "quote": "The application deadline is February 1.",
+                            "confidence": 0.9,
+                        }
+                    ],
+                },
+            )
+        ]
+    )
+    assert merged["deadline"] is None
+    assert merged["deadlines"] == []
+    assert merged["evidence"][0]["quote"] == "The application deadline is February 1."
 
 
 def test_all_seven_skill_outputs_enforce_json_schema():

@@ -1,7 +1,7 @@
 import { Check, Circle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const steps = ["确认画像", "盘点初始材料", "推荐并选择项目", "核验项目官网", "逐项目准备材料", "申请执行"];
+const steps = ["画像与初始材料", "项目推荐", "选校清单", "申请材料准备", "申请看板"];
 
 export function ProcessGuide({ current, completed = [] }: { current: number; completed?: number[] }) {
   return <div className="mb-6 overflow-x-auto rounded-2xl border border-black/5 bg-white/65 p-4">

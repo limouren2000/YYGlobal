@@ -1,6 +1,17 @@
 packages:
   - apps/*
 
+supportedArchitectures:
+  os:
+    - current
+    - linux
+  cpu:
+    - current
+    - arm64
+  libc:
+    - current
+    - musl
+
 onlyBuiltDependencies:
   - esbuild
   - sharp

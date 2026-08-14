@@ -1,5 +1,6 @@
 from datetime import date, timedelta
-from typing import List, Optional
+import re
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,67 @@ def material_key(name: str) -> str:
         if any(alias.lower() in lowered for alias in aliases):
             return key
     return "other_" + "_".join(name.lower().split())[:60]
+
+
+def material_slots(names: List[str]) -> List[Dict[str, Any]]:
+    """Turn official requirements into stable per-program submission slots."""
+    prepared_names = [str(value).strip() for value in names if str(value).strip()]
+    generic_ps_headings = {
+        "ps", "statement of purpose", "personal statement", "essay", "essays",
+        "statement of purpose / essays", "personal statement / essays",
+        "statement of purpose/essays", "personal statement/essays",
+        "个人陈述", "项目文书", "文书",
+    }
+
+    def is_generic_ps_heading(value: str) -> bool:
+        cleaned = re.sub(r"\s+", " ", value.strip().lower()).strip(" .:：;；-/")
+        return cleaned in generic_ps_headings
+
+    specific_ps_requirements = [
+        value for value in prepared_names
+        if material_key(value) == "ps" and not is_generic_ps_heading(value)
+    ]
+    if specific_ps_requirements:
+        # Official pages often expose a generic “Statement of Purpose / Essays”
+        # heading and its full instruction as two list items. The heading is not
+        # a second deliverable, so keep only the concrete requirement(s).
+        prepared_names = [
+            value for value in prepared_names
+            if material_key(value) != "ps" or not is_generic_ps_heading(value)
+        ]
+    ps_total = sum(1 for value in prepared_names if material_key(value) == "ps")
+    slots: List[Dict[str, Any]] = []
+    counters: Dict[str, int] = {}
+    for raw_name in prepared_names:
+        name = str(raw_name).strip()
+        base_key = material_key(name)
+        count = 1
+        if base_key == "recommendation":
+            number = re.search(r"([1-5])\s*(?:封|份|letters?)?", name, re.IGNORECASE)
+            word_number = next((value for word, value in {
+                "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+            }.items() if re.search(rf"\b{word}\b", name, re.IGNORECASE) or word in name), None)
+            match = int(number.group(1)) if number else word_number
+            count = min(5, max(1, match or 1))
+        for index in range(count):
+            counters[base_key] = counters.get(base_key, 0) + 1
+            position = counters[base_key]
+            slot_key = base_key if base_key not in {"ps", "recommendation"} and position == 1 else f"{base_key}-{position}"
+            label = material_label(base_key, name)
+            if base_key == "recommendation":
+                label = f"推荐信 {position}"
+            elif base_key == "ps":
+                label = f"项目文书 {position}" if ps_total > 1 else "项目文书"
+            slots.append({
+                "material_key": slot_key,
+                "slot_key": slot_key,
+                "category": base_key,
+                "name": label,
+                "official_name": name,
+                "generatable": base_key in {"cv", "ps", "recommendation"},
+            })
+    return slots
 
 
 def material_label(key: str, original: str = "") -> str:
@@ -243,6 +305,108 @@ async def score_program(
     return score, tier, reasons or ["与当前申请方向存在基础匹配"], risks
 
 
+async def score_recommendation(
+    profile: ApplicantProfile,
+    experiences: List[Experience],
+    program: Program,
+    requirement: Optional[ProgramRequirement],
+) -> tuple[float, List[str]]:
+    """Rank candidates using every confirmed profile signal that the catalog can compare."""
+    score = 45.0
+    reasons: List[str] = []
+
+    if profile.target_countries and program.country in profile.target_countries:
+        score += 12
+        reasons.append("符合目标国家")
+    if profile.target_fields and any(
+        target.lower() in program.field.lower() or program.field.lower() in target.lower()
+        for target in profile.target_fields
+    ):
+        score += 18
+        reasons.append("专业方向匹配")
+
+    if profile.budget and program.tuition:
+        if program.tuition <= profile.budget:
+            score += 6
+            reasons.append("学费在预算范围内")
+        else:
+            score -= min(15, 5 + (program.tuition - profile.budget) / profile.budget * 10)
+
+    if requirement and requirement.min_gpa is not None and profile.gpa is not None:
+        if profile.gpa >= requirement.min_gpa:
+            score += 6
+            reasons.append("GPA 达到官网要求")
+        else:
+            score -= 20
+
+    if profile.current_major and program_matches_fields(program, [profile.current_major]):
+        score += 5
+        reasons.append("与当前专业背景衔接")
+
+    confirmed = [item for item in experiences if item.confirmed]
+    if confirmed:
+        score += min(6, len(confirmed) * 1.5)
+        kinds = {item.kind for item in confirmed}
+        labels = []
+        for key, label in (
+            ("research", "科研"),
+            ("internship", "实习"),
+            ("project", "项目"),
+            ("award", "奖项"),
+            ("course", "课程"),
+        ):
+            if key in kinds:
+                labels.append(label)
+        reasons.append(f"结合已确认的{'、'.join(labels[:3]) or '经历'}素材")
+
+    language = requirement.language if requirement else {}
+    met_languages = []
+    for test_name in ("TOEFL", "IELTS", "GRE", "GMAT"):
+        applicant_score = profile.language_scores.get(test_name)
+        required_score = language.get(test_name)
+        if applicant_score is not None and required_score is not None:
+            if float(applicant_score) >= float(required_score):
+                score += 4
+                met_languages.append(test_name)
+            else:
+                score -= 10
+    if met_languages:
+        reasons.append(f"当前{'/'.join(met_languages)}成绩达到官网要求")
+
+    preference_text = " ".join(str(value) for value in profile.preferences.values()).lower()
+    if program.city and program.city.lower() in preference_text:
+        score += 3
+        reasons.append("城市偏好匹配")
+
+    if profile.intake:
+        reasons.append(f"面向 {profile.intake} 申请规划")
+
+    return max(0, min(100, score)), list(dict.fromkeys(reasons))
+
+
+async def recommendation_candidates(
+    session: AsyncSession,
+    query: str = "",
+    limit: int = 5,
+    excluded_program_ids: Optional[Set[str]] = None,
+) -> List[tuple[Program, float, List[str]]]:
+    profile, experiences = await profile_with_experiences(session)
+    programs = await search_programs_for_profile(session, query=query, use_profile=not bool(query))
+    excluded_program_ids = excluded_program_ids or set()
+    programs = [
+        program for program in programs if program.id not in excluded_program_ids
+    ]
+    ranked = []
+    for program in programs:
+        requirement = await get_requirement(session, program.id)
+        score, reasons = await score_recommendation(
+            profile, experiences, program, requirement
+        )
+        ranked.append((program, score, reasons))
+    ranked.sort(key=lambda item: (-item[1], item[0].university, item[0].name))
+    return ranked[:limit]
+
+
 async def create_shortlist(session: AsyncSession, name: str, program_ids: List[str]) -> Shortlist:
     profile = await get_or_create_profile(session)
     shortlist = Shortlist(name=name, owner_id=settings.local_owner_id)
@@ -275,12 +439,138 @@ async def create_shortlist(session: AsyncSession, name: str, program_ids: List[s
     return shortlist
 
 
+async def add_shortlist_programs(
+    session: AsyncSession, program_ids: List[str], name: str = "我的选校与申请包"
+) -> Shortlist:
+    shortlist = await consolidate_shortlists(session)
+    if shortlist is None:
+        shortlist = Shortlist(name=name, owner_id=settings.local_owner_id)
+        session.add(shortlist)
+        await session.flush()
+
+    existing_ids = set(
+        (
+            await session.scalars(
+                select(ShortlistItem.program_id).where(
+                    ShortlistItem.shortlist_id == shortlist.id
+                )
+            )
+        ).all()
+    )
+    profile, experiences = await profile_with_experiences(session)
+    for program_id in dict.fromkeys(program_ids):
+        if program_id in existing_ids:
+            continue
+        program = await get_program(session, program_id)
+        if not program:
+            continue
+        requirement = await get_requirement(session, program_id)
+        score, reasons = await score_recommendation(
+            profile, experiences, program, requirement
+        )
+        _, tier, _, risks = await score_program(profile, program, requirement)
+        session.add(
+            ShortlistItem(
+                shortlist_id=shortlist.id,
+                program_id=program.id,
+                tier=tier,
+                score=score,
+                rationale="；".join(reasons),
+                risks=risks,
+                owner_id=settings.local_owner_id,
+            )
+        )
+        await get_or_create_application_package(session, program.id, shortlist.id)
+    shortlist.rationale = "基于完整画像、已确认经历和官网原文证据生成。"
+    await session.commit()
+    await session.refresh(shortlist)
+    return shortlist
+
+
+async def consolidate_shortlists(session: AsyncSession) -> Optional[Shortlist]:
+    """Collapse legacy one-shot shortlists into the current persistent collection."""
+    shortlists = list(
+        (
+            await session.scalars(
+                select(Shortlist)
+                .where(Shortlist.owner_id == settings.local_owner_id)
+                .order_by(Shortlist.created_at.desc())
+            )
+        ).all()
+    )
+    if not shortlists:
+        return None
+    primary = shortlists[0]
+    primary.name = "我的选校与申请包"
+    all_ids = [item.id for item in shortlists]
+    rows = list(
+        (
+            await session.scalars(
+                select(ShortlistItem)
+                .where(ShortlistItem.shortlist_id.in_(all_ids))
+                .order_by(ShortlistItem.created_at.desc())
+            )
+        ).all()
+    )
+    seen: set[str] = set()
+    for row in rows:
+        if row.program_id in seen:
+            await session.delete(row)
+            continue
+        seen.add(row.program_id)
+        row.shortlist_id = primary.id
+    packages = list(
+        (
+            await session.scalars(
+                select(ApplicationPackage).where(
+                    ApplicationPackage.owner_id == settings.local_owner_id,
+                    ApplicationPackage.shortlist_id.in_(all_ids),
+                )
+            )
+        ).all()
+    )
+    for package in packages:
+        package.shortlist_id = primary.id
+    for legacy in shortlists[1:]:
+        await session.delete(legacy)
+    primary.rationale = "基于完整画像、已确认经历和官网原文证据生成。"
+    await session.commit()
+    await session.refresh(primary)
+    return primary
+
+
+async def remove_shortlist_program(
+    session: AsyncSession, shortlist_id: str, program_id: str
+) -> bool:
+    item = await session.scalar(
+        select(ShortlistItem).where(
+            ShortlistItem.shortlist_id == shortlist_id,
+            ShortlistItem.program_id == program_id,
+            ShortlistItem.owner_id == settings.local_owner_id,
+        )
+    )
+    if item is None:
+        return False
+    await session.delete(item)
+    package = await session.scalar(
+        select(ApplicationPackage).where(
+            ApplicationPackage.owner_id == settings.local_owner_id,
+            ApplicationPackage.program_id == program_id,
+            ApplicationPackage.shortlist_id == shortlist_id,
+        )
+    )
+    if package is not None:
+        await session.delete(package)
+    await session.commit()
+    return True
+
+
 async def _initial_assets(session: AsyncSession, program_id: str) -> dict:
     documents = list(
         (await session.scalars(select(Document).where(
             Document.owner_id == settings.local_owner_id,
             Document.parse_status.notin_(["failed", "pending"]),
-        ))).all()
+        ).order_by(Document.created_at.desc()))).all()
     )
     artifacts = list(
         (await session.scalars(select(MaterialArtifact).where(
@@ -290,10 +580,18 @@ async def _initial_assets(session: AsyncSession, program_id: str) -> dict:
     drafts = list(
         (await session.scalars(select(MaterialDraft).where(
             MaterialDraft.owner_id == settings.local_owner_id,
-            MaterialDraft.status == "reviewed",
-        ))).all()
+        ).order_by(MaterialDraft.updated_at.desc()))).all()
     )
+    draft_program_ids = {draft.program_id for draft in drafts if draft.program_id}
+    draft_programs = list((await session.scalars(
+        select(Program).where(Program.id.in_(draft_program_ids))
+    )).all()) if draft_program_ids else []
+    program_labels = {
+        program.id: f"{program.university} · {program.name}"
+        for program in draft_programs
+    }
     by_key = {key: [] for key in MATERIAL_ALIASES}
+    by_key.setdefault("recommendation", [])
     for document in documents:
         key = material_key(document.kind)
         if key in by_key:
@@ -304,10 +602,21 @@ async def _initial_assets(session: AsyncSession, program_id: str) -> dict:
         ):
             by_key[artifact.kind].append({"type": "artifact", "id": artifact.id, "label": artifact.version_name})
     for draft in drafts:
-        if draft.kind in by_key and (
-            draft.program_id is None or draft.program_id == program_id
-        ):
-            by_key[draft.kind].append({"type": "draft", "id": draft.id, "label": f"{draft.title} v{draft.version_number}"})
+        if draft.kind in by_key:
+            scope = "general" if draft.program_id is None else (
+                "current_program" if draft.program_id == program_id else "other_program"
+            )
+            source_program = program_labels.get(draft.program_id or "", "")
+            source_suffix = f" · 来源：{source_program}" if source_program else ""
+            status_suffix = " · 草稿" if draft.status != "reviewed" else ""
+            by_key[draft.kind].append({
+                "type": "draft",
+                "id": draft.id,
+                "label": f"{draft.title} v{draft.version_number}{source_suffix}{status_suffix}",
+                "program_id": draft.program_id,
+                "scope": scope,
+                "status": draft.status,
+            })
     return by_key
 
 
@@ -317,19 +626,56 @@ async def refresh_application_package(
     requirement = await get_requirement(session, package.program_id)
     official_verified = bool(requirement and requirement.verified)
     names = list(requirement.materials) if requirement and requirement.materials else DEFAULT_MATERIALS
-    unique = []
-    for name in names:
-        key = material_key(str(name))
-        if not any(item["material_key"] == key for item in unique):
-            unique.append({"material_key": key, "name": material_label(key, str(name))})
+    unique = material_slots([str(name) for name in names])
     assets = await _initial_assets(session, package.program_id)
     previous = {item.get("material_key"): item for item in (package.checklist or [])}
     checklist = []
+    used_recommendation_assets: Set[str] = set()
+    selection_changed = False
     for base in unique:
         key = base["material_key"]
+        category = base.get("category", key)
         old = previous.get(key, {})
-        candidates = assets.get(key, [])
+        candidates = assets.get(category, [])
         status = old.get("status")
+        selected_type = old.get("selected_asset_type", "")
+        selected_id = old.get("selected_asset_id", "")
+        selected_exists = any(
+            candidate.get("type") == selected_type and candidate.get("id") == selected_id
+            for candidate in candidates
+        )
+        if selected_id and not selected_exists:
+            selected_type = ""
+            selected_id = ""
+            status = "unverified" if candidates else "missing"
+        elif status == "missing" and candidates:
+            status = "unverified"
+        if not selected_id and candidates:
+            available = [
+                candidate for candidate in candidates
+                if candidate.get("type") != "draft" or candidate.get("status") == "reviewed"
+            ]
+            if category == "recommendation":
+                available = [candidate for candidate in candidates if candidate.get("id") not in used_recommendation_assets]
+            elif category == "ps":
+                # A generic uploaded PS is useful as reference, but must not be silently
+                # treated as a project-ready submission. Only project-scoped artifacts or
+                # reviewed generated drafts can become the automatic default.
+                available = [
+                    candidate for candidate in available
+                    if candidate.get("type") == "artifact" or (
+                        candidate.get("type") == "draft"
+                        and candidate.get("scope") in {"general", "current_program"}
+                    )
+                ]
+            recommended = available[0] if available else None
+            if recommended:
+                selected_type = str(recommended.get("type", ""))
+                selected_id = str(recommended.get("id", ""))
+                status = "ready"
+                selection_changed = True
+        if category == "recommendation" and selected_id:
+            used_recommendation_assets.add(selected_id)
         if status not in {"ready", "needs_edit", "unverified", "missing", "manual_review"}:
             status = "unverified" if candidates else "missing"
         checklist.append({
@@ -338,13 +684,11 @@ async def refresh_application_package(
             "status": status,
             "source_verified": official_verified,
             "candidate_assets": candidates,
-            "selected_asset_type": old.get("selected_asset_type", ""),
-            "selected_asset_id": old.get("selected_asset_id", ""),
+            "selected_asset_type": selected_type,
+            "selected_asset_id": selected_id,
             "note": old.get("note", ""),
         })
     gaps = []
-    if not official_verified:
-        gaps.append("项目官网材料要求尚未完成深度核验，当前清单仅为通用占位")
     for item in checklist:
         if item["status"] == "missing":
             gaps.append(f"缺少：{item['name']}")
@@ -353,12 +697,13 @@ async def refresh_application_package(
     package.official_verified = official_verified
     package.checklist = checklist
     package.gaps = gaps
-    package.ready = official_verified and bool(checklist) and all(
+    if selection_changed:
+        package.plan_confirmed = False
+    selections_complete = bool(checklist) and all(
         item["status"] == "ready" and item.get("selected_asset_id") for item in checklist
     )
-    package.status = "ready" if package.ready else (
-        "materials_in_progress" if official_verified else "needs_official_verification"
-    )
+    package.ready = package.plan_confirmed and selections_complete
+    package.status = "ready" if package.ready else "materials_in_progress"
     await session.flush()
     return package
 

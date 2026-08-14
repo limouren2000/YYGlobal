@@ -1,5 +1,6 @@
 import asyncio
 import re
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, select
@@ -326,7 +327,17 @@ def merge_source_extractions(items: List[tuple]) -> Dict[str, Any]:
             merged["evidence"].append({**evidence, "source_id": source.id, "url": source.url})
     merged["deadlines"] = list({
         (item["date"], item["source_id"]): item for item in merged["deadlines"]
+        if item.get("date") and item["date"] >= date.today().isoformat()
     }.values())
+    merged["deadlines"].sort(key=lambda item: item["date"])
+    if merged["deadlines"]:
+        merged["deadline"] = merged["deadlines"][0]["date"]
+        merged["deadline_raw"] = merged["deadlines"][0].get("raw", "")
+    elif merged.get("deadline") and merged["deadline"] < date.today().isoformat():
+        # Keep the verbatim evidence quote, but never promote an inferred or
+        # historical year into the structured current-cycle deadline field.
+        merged["deadline"] = None
+        merged["deadline_raw"] = ""
     return merged
 
 

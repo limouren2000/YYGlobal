@@ -7,6 +7,7 @@ Revises: 0007_material_draft_versions
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0008_application_packages"
@@ -16,6 +17,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("application_packages"):
+        return
     op.create_table(
         "application_packages",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -36,4 +39,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("application_packages")
+    if sa.inspect(op.get_bind()).has_table("application_packages"):
+        op.drop_table("application_packages")
