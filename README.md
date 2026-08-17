@@ -1,10 +1,10 @@
 <p align="center">
   <img src="docs/assets/yyglobal-hero-v3.png" alt="YYGlobal — AI-native study abroad application workspace" width="100%" />
   <a href="https://github.com/limouren2000/YYGlobal/stargazers">
-    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/limouren2000/YYGlobal?style=for-the-badge&logo=github&color=163528" />
+    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/limouren2000/YYGlobal?style=for-the-badge&logo=github&logoColor=white&labelColor=0969DA&color=58A6FF" />
   </a>
   <a href="https://github.com/limouren2000/YYGlobal/forks">
-    <img alt="GitHub Forks" src="https://img.shields.io/github/forks/limouren2000/YYGlobal?style=for-the-badge&logo=github&color=163528" />
+    <img alt="GitHub Forks" src="https://img.shields.io/github/forks/limouren2000/YYGlobal?style=for-the-badge&logo=github&logoColor=white&labelColor=9A6700&color=FFD33D" />
   </a>
 </p>
 
