@@ -1,8 +1,12 @@
 <p align="center">
   <img src="docs/assets/yyglobal-hero-v3.png" alt="YYGlobal — AI-native study abroad application workspace" width="100%" />
+  <a href="https://github.com/limouren2000/YYGlobal/stargazers">
+    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/limouren2000/YYGlobal?style=for-the-badge&logo=github&color=163528" />
+  </a>
+  <a href="https://github.com/limouren2000/YYGlobal/forks">
+    <img alt="GitHub Forks" src="https://img.shields.io/github/forks/limouren2000/YYGlobal?style=for-the-badge&logo=github&color=163528" />
+  </a>
 </p>
-
-<h1 align="center">YYGlobal</h1>
 
 <p align="center">
   <strong>面向留学场景的开放式 Agent：理解目标，调用工具，处理材料，持续完成任务</strong>
