@@ -36,6 +36,14 @@ class AgentTraceRedactorTests(unittest.TestCase):
         self.assertEqual(redacted["request"]["API-Key"], "[REDACTED]")
         self.assertEqual(redacted["request"]["items"][0]["password"], "[REDACTED]")
 
+    def test_redacts_common_http_credential_header_names(self) -> None:
+        value = {"X-API-Key": "private-key", "X Auth Token": "private-token", "Proxy-Authorization": "Basic private"}
+
+        self.assertEqual(
+            REDACTOR.redact_value(value),
+            {key: REDACTOR.DEFAULT_PLACEHOLDER for key in value},
+        )
+
     def test_keeps_similarly_named_non_secret_fields(self) -> None:
         value = {"token_count": 42, "secret_reason": "classification", "status": "ok"}
 

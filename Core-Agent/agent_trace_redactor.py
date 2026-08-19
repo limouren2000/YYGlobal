@@ -38,6 +38,9 @@ DEFAULT_SENSITIVE_KEYS = frozenset(
         "access_token",
         "refresh_token",
         "id_token",
+        "x_api_key",
+        "x_auth_token",
+        "proxy_authorization",
     }
 )
 DEFAULT_PLACEHOLDER = "[REDACTED]"
