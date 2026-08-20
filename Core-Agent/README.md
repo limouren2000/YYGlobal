@@ -233,6 +233,26 @@ python Core-Agent/material_checklist.py \
 
 Add `--json` when the result needs to be consumed by another tool.
 
+## Material requirement normalization
+
+`material_normalizer.py` 把官网抽取出的材料要求归一成标准类别，并映射到资产库
+槽位。它解决官网核验后材料清单里的两类问题：推荐信要求被抽取成整句原文（如
+`We request 3 letters, at least two of which are from faculty or recent
+employers.`），以及 `English proficiency` / `GRE / GMAT` 等官网用词无法匹配
+资产库槽位。
+
+```bash
+python Core-Agent/material_normalizer.py \
+  --json '["We request 3 letters, at least two of which are from faculty or recent employers."]'
+```
+
+无法识别为标准类别的材料名会原样保留，便于人工发现未覆盖的非标准表述。
+运行单元测试：
+
+```bash
+python -m unittest discover -s Core-Agent -p "test_material_normalizer.py"
+```
+
 ## Program code validation
 
 `program_code_validator.py` 校验留学申请场景中的项目编号格式，只使用 Python
