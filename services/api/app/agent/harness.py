@@ -117,10 +117,12 @@ class AgentHarness:
             output_findings = verify_output(
                 json.dumps(structured_output, ensure_ascii=False)
             )
+            persisted_structured_output = structured_output
             if output_findings:
                 await emit("guardrail.triggered", {"findings": output_findings})
                 display_output = "模型输出未通过安全检查，请换一种方式描述任务。"
                 run.stop_reason = "output_guardrail"
+                persisted_structured_output = {}
             else:
                 run.stop_reason = "success"
             for step in step_records:
@@ -131,7 +133,7 @@ class AgentHarness:
             run.plan = [{**item, "status": "completed"} for item in (run.plan or [])]
             run.status = "completed"
             run.final_output = display_output
-            run.structured_output = structured_output
+            run.structured_output = persisted_structured_output
             run.token_usage = usage
             run.duration_ms = int((time.perf_counter() - started) * 1000)
             session.add(
@@ -145,7 +147,11 @@ class AgentHarness:
             await session.commit()
             await emit(
                 "message.completed",
-                {"run_id": run.id, "content": display_output, "structured_output": structured_output},
+                {
+                    "run_id": run.id,
+                    "content": display_output,
+                    "structured_output": persisted_structured_output,
+                },
             )
             await emit(
                 "run.completed",
